@@ -9,6 +9,7 @@ venv/
 logs/
 *.log
 .env
+*.md
 
 # Local media/tooling blobs (do not store in git)
 ffmpeg/
@@ -21,3 +22,4 @@ Thumbs.db
 cookies.txt
 
 !.env.example
+

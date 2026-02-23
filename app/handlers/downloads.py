@@ -8,24 +8,28 @@ import uuid
 
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, TimedOut
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import ContextTypes
 from yt_dlp import YoutubeDL
 
 from app.config import (
-    ALLOWED_USERS,
     ASK_RANGE,
     ASK_RANGE_YT,
     ASK_TRIM,
     ASK_TRIM_YT,
     ASK_TYPE,
     MAX_DURATION,
+    YTDLP_COOKIES_FILE,
+    YTDLP_JS_RUNTIMES_MAP,
     YTDLP_META_SOCKET_TIMEOUT,
+    YTDLP_REMOTE_COMPONENTS,
 )
+from app.access import PLAN_FREE, get_user_profile, is_premium_plan
 from app.errors import (
     ERR_COOLDOWN_ACTIVE,
     ERR_DOWNLOAD_FAILED,
     ERR_FILE_NOT_FOUND,
     ERR_FFMPEG_MISSING,
+    ERR_FREE_LIMIT_REACHED,
     ERR_HTTP_NOT_FOUND,
     ERR_INVALID_LINK,
     ERR_INVALID_RANGE_FORMAT,
@@ -47,30 +51,32 @@ from app.errors import (
     ERR_WORKER_UPLOAD_FAILED,
     ERR_WORKER_UPLOAD_HTTP,
 )
+from app.handlers.metadata import maybe_offer_metadata_edit
+from app.handlers.payments import build_premium_markup
 from app.i18n import get_lang, t, tf
 from app.jobs import (
     abort_user_job,
     clear_conversation_state,
     acquire_download_cooldown,
-    cancel_active_download_task,
     finish_job,
     register_active_download_task,
     register_active_worker_future,
     register_scheduled_download_task,
     request_active_download_cancel,
     resolve_ffmpeg_path,
-    safe_filename,
     start_job,
     unregister_active_download_task,
     unregister_active_worker_future,
 )
 from app.logging_utils import classify_exception_error_code, log_event, worker_error
+from app.policy import resolve_user_download_policy
 from app.settings_store import (
     get_user_logs_enabled,
     get_user_logs_enabled_sync,
     get_user_settings,
     log_user_event_if_enabled,
 )
+from app.usage import increment_usage_success_once
 from app.services.worker import _progress_consumer, _progress_watcher, _stall_watchdog, _sync_worker
 from app.state import (
     BACKGROUND_JOB_TASKS,
@@ -196,6 +202,8 @@ def schedule_download_background(
     message=None,
     prompt_chat_id=None,
     prompt_message_id=None,
+    plan_snapshot=PLAN_FREE,
+    max_duration_seconds=MAX_DURATION,
 ):
     target_message = message or getattr(update, "effective_message", None)
     if target_message is None:
@@ -222,6 +230,8 @@ def schedule_download_background(
                 end=end,
                 yt_type=yt_type,
                 message=target_message,
+                plan_snapshot=plan_snapshot,
+                max_duration_seconds=max_duration_seconds,
             )
             try:
                 await target_message.reply_text(t("send_another", lang))
@@ -282,6 +292,43 @@ async def _start_download_flow(
     prompt_message_id=None,
     announce_coro=None,
 ):
+    profile = await get_user_profile(owner_id)
+    policy = await resolve_user_download_policy(profile)
+    plan_snapshot = policy["plan_type"]
+    max_duration_seconds = int(policy["max_duration_seconds"])
+    if policy["blocked_by_limit"]:
+        await log_user_event_if_enabled(
+            owner_id,
+            "limit.free.blocked",
+            level="WARNING",
+            error_code=ERR_FREE_LIMIT_REACHED,
+            user_logs_enabled=user_logs_enabled,
+            usage_count=policy["usage_count"],
+            usage_limit=policy["free_limit"],
+        )
+        log_event(
+            "limit.free.blocked",
+            level="WARNING",
+            error_code=ERR_FREE_LIMIT_REACHED,
+            user_id=owner_id,
+            usage_count=policy["usage_count"],
+            usage_limit=policy["free_limit"],
+        )
+        try:
+            await message.reply_text(
+                tf(
+                    "free_limit_reached",
+                    lang,
+                    count=policy["usage_count"],
+                    limit=policy["free_limit"],
+                ),
+                reply_markup=build_premium_markup(lang),
+            )
+        except Exception:
+            pass
+        clear_conversation_state(context, owner_id)
+        return ASK_TRIM
+
     if not start_job(context, owner_id):
         await log_user_event_if_enabled(
             owner_id,
@@ -324,6 +371,8 @@ async def _start_download_flow(
         message=message,
         prompt_chat_id=prompt_chat_id,
         prompt_message_id=prompt_message_id,
+        plan_snapshot=plan_snapshot,
+        max_duration_seconds=max_duration_seconds,
     )
     if task is None:
         try:
@@ -675,9 +724,6 @@ async def trim_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== Обработчик команды /cancel =====
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user and user.id not in ALLOWED_USERS:
-        await update.message.reply_text(t("owners_only", "ru"))
-        return ConversationHandler.END
 
     lang = await get_lang(user.id, getattr(user, "language_code", None)) if user else "ru"
 
@@ -830,7 +876,18 @@ async def trim_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== Синхронный воркер (с progress hook и учётом качества) =====
 
-async def download_content(update, context, url, platform="soundcloud", start=None, end=None, yt_type="audio", message=None):
+async def download_content(
+    update,
+    context,
+    url,
+    platform="soundcloud",
+    start=None,
+    end=None,
+    yt_type="audio",
+    message=None,
+    plan_snapshot=PLAN_FREE,
+    max_duration_seconds=MAX_DURATION,
+):
     msg = message or update.message
     effective_user = update.effective_user or (msg.from_user if msg else None)
     user_id = effective_user.id if effective_user else (msg.from_user.id if msg and msg.from_user else None)
@@ -921,6 +978,12 @@ async def download_content(update, context, url, platform="soundcloud", start=No
                         'no_warnings': True,
                         'socket_timeout': YTDLP_META_SOCKET_TIMEOUT,
                     }
+                    if platform == "youtube" and YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
+                        ydl_opts_meta["cookiefile"] = YTDLP_COOKIES_FILE
+                    if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
+                        ydl_opts_meta["js_runtimes"] = dict(YTDLP_JS_RUNTIMES_MAP)
+                    if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:
+                        ydl_opts_meta["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
                     with YoutubeDL(ydl_opts_meta) as ydl:
                         if cancel_event.is_set():
                             return {}
@@ -934,8 +997,15 @@ async def download_content(update, context, url, platform="soundcloud", start=No
             unregister_active_worker_future(user_id, worker_future)
             worker_future = None
             duration = info_meta.get("duration") or 0
-            if duration and duration > MAX_DURATION:
-                await msg.reply_text(tf("too_long", lang, hours=int(duration/3600), max_hours=int(MAX_DURATION/3600)))
+            if duration and duration > max_duration_seconds:
+                await msg.reply_text(
+                    tf(
+                        "too_long",
+                        lang,
+                        hours=int(duration / 3600),
+                        max_hours=int(max_duration_seconds / 3600),
+                    )
+                )
                 try:
                     await status_msg.delete()
                 except Exception:
@@ -1003,6 +1073,9 @@ async def download_content(update, context, url, platform="soundcloud", start=No
             title = result.get('title', 'Media')
             uploader = result.get('uploader', 'Unknown')
             caption = f"🎵 {title}\n👤 {uploader}"
+            delivery_success = False
+            delivered_ext = result.get("ext")
+            delivered_file_path = None
 
             if mode == 'file':
                 file_path = result.get('file_path')
@@ -1012,6 +1085,8 @@ async def download_content(update, context, url, platform="soundcloud", start=No
                             await msg.reply_audio(f, caption=caption, title=title, performer=uploader)
                         else:
                             await msg.reply_video(f, caption=caption)
+                    delivery_success = True
+                    delivered_file_path = file_path
                     if user_logs_enabled:
                         log_event(
                             "job.completed.file",
@@ -1052,6 +1127,7 @@ async def download_content(update, context, url, platform="soundcloud", start=No
             elif mode == 'link':
                 link = result.get('link')
                 await msg.reply_text(tf("file_too_big", lang, link=link))
+                delivery_success = True
                 if user_logs_enabled:
                     log_event(
                         "job.completed.link",
@@ -1084,6 +1160,40 @@ async def download_content(update, context, url, platform="soundcloud", start=No
                         job_id=job_id,
                         platform=platform,
                         yt_type=yt_type,
+                    )
+
+            if delivery_success and user_id is not None and plan_snapshot == PLAN_FREE:
+                await increment_usage_success_once(user_id, job_id)
+
+            if (
+                delivery_success
+                and user_id is not None
+                and delivered_ext == "mp3"
+                and delivered_file_path
+                and is_premium_plan(plan_snapshot)
+            ):
+                try:
+                    user_settings = await get_user_settings(user_id)
+                    await maybe_offer_metadata_edit(
+                        context=context,
+                        message=msg,
+                        user_id=user_id,
+                        lang=lang,
+                        plan_type=plan_snapshot,
+                        settings=user_settings,
+                        file_path=delivered_file_path,
+                        title=title,
+                        artist=uploader,
+                        source_job_id=job_id,
+                    )
+                except Exception as e:
+                    log_event(
+                        "metadata.offer.failed",
+                        level="ERROR",
+                        user_id=user_id,
+                        job_id=job_id,
+                        error_class=type(e).__name__,
+                        error=str(e),
                     )
 
         except asyncio.CancelledError:

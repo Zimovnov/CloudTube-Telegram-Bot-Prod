@@ -1,154 +1,210 @@
-﻿# Developer Guide (SoundCloud Bot)
+# Developer Guide (v3)
 
-Этот документ про структуру кода после рефакторинга: что где лежит и куда идти, если нужно что-то поменять.
+Документ для разработчика: где лежит логика `plan + role`, лимиты, Stars, metadata-flow и RBAC.
 
-
-- `bot.py` — только запуск приложения, регистрация хендлеров, wiring.
-- Основная логика — в папке `app/`.
-- Переводы — в `locales/`.
-- Тесты — в `tests/`.
-
-## Текущая структура
+## 1. Ключевые модули
 
 - `bot.py`
-  - Точка входа: `main()`, подключение хендлеров и запуск polling.
+  - wiring хендлеров;
+  - глобальный dedup `update_id`;
+  - запуск metadata expiry sweeper;
+  - bootstrap начального `superadmin`.
 
-- `app/config.py`
-  - Конфиг из `.env`, лимиты, константы, состояния диалога (`ASK_*`).
+- `app/access.py`
+  - модель профиля пользователя: `plan_type`, `plan_expires_at_utc`, `role`;
+  - RBAC (`rbac_check`, permissions);
+  - admin nonce (2-step подтверждение);
+  - аудит изменений ролей/планов;
+  - продление monthly-подписки.
 
-- `app/errors.py`
-  - Коды ошибок (`ERR_*`) и `WorkerCancelledError`.
+- `app/usage.py`
+  - Free usage counters `usage:{user_id}:{YYYYMM}`;
+  - dedup счетчика по `job_id` (`job_counted:{job_id}`);
+  - dedup платежей `payment_done:{telegram_payment_charge_id}`;
+  - dedup апдейтов `update_done:{update_id}`.
 
-- `app/logging_utils.py`
-  - Логгер, sanitize, классификация ошибок, `log_event`.
+- `app/policy.py`
+  - вычисление пользовательской политики запуска (Free/Premium, лимиты, max duration).
 
-- `app/state.py`
-  - In-memory состояние/словари и lock-объекты.
-
-- `app/jobs.py`
-  - Redis init, cooldown, ограничения параллелизма, cancel/abort задач.
-
-- `app/settings_store.py`
-  - Чтение/запись пользовательских настроек (Redis + fallback local).
-
-- `app/i18n.py`
-  - `t()`, `tf()`, `get_lang()`, загрузка переводов из JSON.
-
-- `app/handlers/base.py`
-  - `/start`, `/help`, restart.
-
-- `app/handlers/settings.py`
-  - Меню настроек и callback-логика кнопок настроек.
+- `app/metadata_store.py`
+  - сессии редактирования метаданных;
+  - TTL 1h;
+  - валидация ввода title/artist;
+  - применение тегов через `ffmpeg`;
+  - очистка временных файлов.
 
 - `app/handlers/downloads.py`
-  - Сценарий получения ссылки, trim/cancel callbacks, orchestration загрузки.
+  - основной download-flow;
+  - проверка Free-лимита до старта;
+  - duration limit check по плану;
+  - инкремент usage после успешной выдачи;
+  - вызов metadata prompt для premium audio.
 
-- `app/services/worker.py`
-  - Тяжелая обработка: yt-dlp, trim, upload, progress/watchdog.
+- `app/handlers/payments.py`
+  - `/premium` и invoice `XTR`;
+  - `pre_checkout_query`;
+  - `successful_payment` с идемпотентностью.
 
-- `locales/ru.json`, `locales/en.json`
-  - Все пользовательские тексты.
+- `app/handlers/admin.py`
+  - админ-команды;
+  - private-only + RBAC;
+  - двухшаговое подтверждение (nonce).
 
-- `tests/`
-  - Unit-тесты.
+- `app/handlers/metadata.py`
+  - callback/text flow для metadata editing;
+  - кнопки `Изменить данные / Оставить`;
+  - `Назад / Отмена / Получить файл`;
+  - фоновый sweeper истекших сессий.
 
-## Что где менять (быстрый маршрут)
+## 2. Модель данных
 
-### 1. Поменять текст бота
+### 2.1 Профиль пользователя
+- key: `user:{user_id}:profile`
+- поля:
+  - `user_id`
+  - `plan_type` (`free|premium_monthly|premium_lifetime`)
+  - `plan_expires_at_utc`
+  - `role` (`user|admin|superadmin`)
+  - `updated_at_utc`
 
-1. Измени ключ в `locales/ru.json`.
-2. Добавь/обнови тот же ключ в `locales/en.json`.
-3. В коде используй `t("key", lang)` или `tf("key", lang, ...)`.
+### 2.2 Настройки пользователя
+- key: `user:{user_id}:settings`
+- поля:
+  - старые (`format`, `quality`, `trim`, `logs`, `language`)
+  - новое: `metadata_prompt_enabled`
 
-Важно: не хардкодь тексты в хендлерах, если это пользовательский UI.
+### 2.3 Лимиты/идемпотентность
+- `usage:{user_id}:{YYYYMM}`: счетчик успешных выдач Free.
+- `job_counted:{job_id}`: дедуп инкремента usage (TTL).
+- `payment_done:{telegram_payment_charge_id}`: дедуп платежа (TTL).
+- `update_done:{update_id}`: дедуп апдейта Telegram (TTL).
 
-### 2. Добавить новую кнопку/раздел в /settings
+### 2.4 Metadata session
+- `metadata:session:{session_id}` + TTL
+- `metadata:active:{user_id}`
+- `metadata:input:{user_id}`
+- `metadata:expires` (zset)
 
-1. Добавь кнопку в `build_main_settings_markup()` в `app/handlers/settings.py`.
-2. Добавь callback route в `settings_callback()`.
-3. Если нужна новая настройка — обнови `normalize_settings()` в `app/settings_store.py`.
-4. Добавь тексты в `locales/*.json`.
+### 2.5 Audit
+- `audit:events` (list)
+- event payload:
+  - `target_user_id`
+  - `granted_by/revoked_by`
+  - `reason`
+  - `created_at_utc`
+  - `source`
 
-### 3. Добавить новую команду (/something)
+## 3. Где проверяются критичные правила
 
-1. Реализуй хендлер в `app/handlers/base.py` (или новом файле в `app/handlers/`).
-2. Подключи `CommandHandler` в `bot.py`.
-3. Добавь описание команды в `locales/*.json` и `app/i18n.py` (через `_build_bot_commands`).
+### 3.1 Free 42/месяц
+- до запуска: `app/handlers/downloads.py` -> `_start_download_flow()`.
+- инкремент: `app/handlers/downloads.py` -> `download_content()` после успешной выдачи.
+- атомарность/дедуп: `app/usage.py` -> Lua (`increment_usage_success_once_sync`).
 
-### 4. Поменять логику скачивания/trim/upload
+### 3.2 Duration limits 3h/10h
+- `app/handlers/downloads.py` -> metadata fetch до основного скачивания.
+- max duration берется из `policy` snapshot на старт задачи.
 
-- Оркестрация диалога и запусков: `app/handlers/downloads.py`.
-- Низкоуровневое скачивание/обрезка/upload: `app/services/worker.py`.
+### 3.3 Истечение monthly
+- `app/access.py` -> `get_user_profile_sync()` auto-downgrade `premium_monthly -> free`.
+- running job не прерывается: использует snapshot плана на старте.
 
-Правило:
-- Хендлеры: принимают решение по сценарию.
-- Worker: делает тяжелую работу с файлами/сетями.
+### 3.4 Платежи Stars
+- invoice: `app/handlers/payments.py` (`currency=XTR`, `75`).
+- pre-checkout validation: `precheckout_handler`.
+- успешный платеж: `successful_payment_handler` + dedup charge id.
 
-### 5. Поменять лимиты, таймауты, флаги
+### 3.5 RBAC
+- централизованная проверка: `app/access.py` -> `rbac_check`.
+- protected operations: `app/handlers/admin.py`.
 
-Меняй в `app/config.py` (через env-переменные).
+### 3.6 2-step admin confirm
+- nonce create: `create_admin_nonce`.
+- nonce consume (one-time): `consume_admin_nonce`.
+- apply operation после подтверждения: `apply_admin_payload_sync`.
 
-Примеры:
-- `MAX_DURATION`
-- `YTDLP_*`
-- `DOWNLOAD_STALL_*`
-- `FFMPEG_REQUIRED_ON_STARTUP`
+## 4. Admin flow
 
-### 6. Поменять логи / приватность
+1. Админ вызывает `/admin_setplan` или `/admin_setrole`.
+2. Проверки:
+   - private chat;
+   - RBAC;
+   - валидность параметров.
+3. Создается nonce с TTL.
+4. Пользователь нажимает `Confirm`.
+5. nonce consume (один раз), повторный RBAC-check, применение операции.
+6. Пишется audit event.
 
-- Формат/санитизацию логов — `app/logging_utils.py`.
-- Коды ошибок — `app/errors.py`.
+## 5. Payment flow
 
-### 7. Redis / состояние задач / отмены
+1. `/premium` или callback `sub:buy_monthly`.
+2. `send_invoice` (`XTR`, `75`, `subscription_period=2592000`).
+3. `pre_checkout_query -> ok`.
+4. `successful_payment`:
+   - dedup по `telegram_payment_charge_id`;
+   - `activate_or_extend_monthly`;
+   - лог `subscription.activated/renewed`.
 
-- Redis-клиент и ограничения — `app/jobs.py`.
-- In-memory словари/locks — `app/state.py`.
+## 6. Metadata flow
 
-## Как запускать и проверять
+1. После успешной отправки `mp3` (Premium + `metadata_prompt_enabled`):
+   - создается session + рабочий файл.
+2. Пользователь проходит меню редактирования.
+3. Ввод title/artist валидируется:
+   - trim;
+   - запрет control chars;
+   - max length из config.
+4. `Get file`:
+   - apply metadata через `ffmpeg`;
+   - отправка файла;
+   - закрытие session (повторная выдача недоступна).
+5. expiry sweeper удаляет истекшие session и уведомляет пользователя.
 
-### Локально
+## 7. Конфиг (важное)
 
-```powershell
-python bot.py
-```
+Смотри `app/config.py`:
+- планы и лимиты:
+  - `FREE_MONTHLY_LIMIT`
+  - `FREE_MAX_DURATION_SECONDS`
+  - `PREMIUM_MAX_DURATION_SECONDS`
+- платежи:
+  - `PREMIUM_MONTHLY_STARS`
+  - `PREMIUM_PERIOD_SECONDS`
+  - `TELEGRAM_STARS_PROVIDER_TOKEN`
+- TTL/idempotency:
+  - `PAYMENT_DEDUP_TTL_SECONDS`
+  - `UPDATE_DEDUP_TTL_SECONDS`
+  - `USAGE_COUNTER_TTL_SECONDS`
+  - `JOB_COUNTED_TTL_SECONDS`
+  - `ADMIN_NONCE_TTL_SECONDS`
+  - `METADATA_SESSION_TTL_SECONDS`
+- YouTube extraction/runtime:
+  - `YTDLP_COOKIES_FILE`
+  - `YTDLP_JS_RUNTIMES` (default: `node`)
+  - `YTDLP_REMOTE_COMPONENTS` (default: `ejs:github`)
 
-### Тесты
+## 8. Тестирование
+
+Запуск:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-### Docker
+Минимум перед merge:
+1. limit + usage dedup.
+2. payment dedup + monthly extension.
+3. RBAC deny/allow.
+4. metadata validation + session lifecycle.
 
-```powershell
-docker compose build bot
-docker compose up -d --force-recreate bot
-docker compose logs -f bot
-```
+## 9. Definition of Done
 
-## Рекомендации по изменениям (чтобы не ломалось)
+Изменение считается завершенным только если:
+- код + тесты + `RUNBOOK.md` + `DEVELOPER_GUIDE.md` + `ERROR.md` синхронны;
+- новый инженер может поднять и проверить сценарии “с нуля” по документации.
 
-1. Сначала меняй маленькими шагами (1 зона за раз).
-2. После каждого шага: `unittest` + `docker compose logs`.
-3. Новые пользовательские тексты — только через `locales`.
-4. Не смешивай heavy logic в `bot.py`: он должен оставаться тонким entry point.
+## 10. Ручная приемка
 
-## Частый сценарий: «добавить новую настройку»
+Для QA-прогона критериев 1-12 используйте:
 
-Мини-чеклист:
-
-1. Добавить поле в `normalize_settings()` (`app/settings_store.py`).
-2. Добавить UI-кнопку/маршрут в `app/handlers/settings.py`.
-3. Добавить ключи текста в `locales/ru.json` и `locales/en.json`.
-4. Прогнать:
-   - `python -m unittest discover -s tests -v`
-   - `docker compose up -d --build bot`
-
-## Итого
-
-Текущая архитектура:
-- `bot.py` в корне — оставляем.
-- Все бизнес-части — в `app/`.
-- Локализация — в `locales/`.
-- Тесты — в `tests/`.
-
+- `ACCEPTANCE_CHECKLIST.md`

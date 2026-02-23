@@ -10,7 +10,10 @@ from app.config import (
     DOWNLOAD_STALL_CHECK_INTERVAL_SECONDS,
     DOWNLOAD_STALL_TIMEOUT_SECONDS,
     EXTERNAL_UPLOAD_TIMEOUT_SECONDS,
+    YTDLP_COOKIES_FILE,
     YTDLP_FRAGMENT_RETRIES,
+    YTDLP_JS_RUNTIMES_MAP,
+    YTDLP_REMOTE_COMPONENTS,
     YTDLP_RETRIES,
     YTDLP_SOCKET_TIMEOUT,
 )
@@ -86,17 +89,37 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
 
         ext = "mp3" if (platform == "soundcloud" or yt_type == "audio") else "mp4"
 
-        # Выбираем формат загрузки в зависимости от yt_type и quality_pref
+        # Выбираем формат загрузки в зависимости от yt_type и quality_pref.
+        # Важно: добавляем "широкий" fallback без жестких ограничений по ext/height,
+        # иначе для части видео YouTube может вернуть "Requested format is not available".
         if yt_type == "audio":
             ydl_format = 'bestaudio/best'
         else:
             # Видео: предпочитаем mp4/m4a, иначе fallback и конвертация в mp4
             if quality_pref == "720":
-                ydl_format = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/bestvideo[height<=720]+bestaudio/best[height<=720]/best'
+                ydl_format = (
+                    'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo[height<=720]+bestaudio/'
+                    'best[height<=720]/'
+                    'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo+bestaudio/'
+                    'best'
+                )
             elif quality_pref == "480":
-                ydl_format = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best[height<=480]/best'
+                ydl_format = (
+                    'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo[height<=480]+bestaudio/'
+                    'best[height<=480]/'
+                    'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo+bestaudio/'
+                    'best'
+                )
             else:
-                ydl_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best'
+                ydl_format = (
+                    'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
+                    'bestvideo+bestaudio/'
+                    'best'
+                )
 
         ydl_opts = {
             'format': ydl_format,
@@ -111,6 +134,12 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
             'continuedl': True,
             'progress_hooks': [_progress_hook],
         }
+        if platform == "youtube" and YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
+            ydl_opts['cookiefile'] = YTDLP_COOKIES_FILE
+        if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
+            ydl_opts['js_runtimes'] = dict(YTDLP_JS_RUNTIMES_MAP)
+        if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:
+            ydl_opts['remote_components'] = list(YTDLP_REMOTE_COMPONENTS)
 
         # Постобработка аудио (извлечение в mp3) с маппингом quality -> bitrate
         if yt_type == "audio":

@@ -51,7 +51,7 @@ _HTTP_BASIC_AUTH_RE = re.compile(r"(https?://)([^/@\s:]+):([^@/\s]+)@")
 _ANSI_RESET = "\033[0m"
 _ANSI_LEVEL_COLORS = {
     "DEBUG": "\033[36m",
-    "INFO": "\033[32m",
+    "INFO": "\033[34m",
     "WARNING": "\033[33m",
     "ERROR": "\033[31m",
     "CRITICAL": "\033[35m",
@@ -85,7 +85,10 @@ class ColoredJsonLogFormatter(JsonLogFormatter):
         color = _ANSI_LEVEL_COLORS.get(record.levelname)
         if not color:
             return rendered
-        return f"{color}{rendered}{_ANSI_RESET}"
+        # Colorize only the "level" value, keep the rest of JSON uncolored.
+        target = f"\"level\": \"{record.levelname}\""
+        replacement = f"\"level\": \"{color}{record.levelname}{_ANSI_RESET}\""
+        return rendered.replace(target, replacement, 1)
 
 
 def _build_logger():
@@ -99,7 +102,8 @@ def _build_logger():
 
     if LOG_TO_STDOUT:
         stdout_handler = logging.StreamHandler(sys.stdout)
-        use_color = bool(LOG_COLOR_STDOUT and getattr(sys.stdout, "isatty", lambda: False)())
+        # Keep colors visible in Docker logs when LOG_COLOR_STDOUT=1.
+        use_color = bool(LOG_COLOR_STDOUT)
         stdout_handler.setFormatter(color_formatter if use_color else formatter)
         app_logger.addHandler(stdout_handler)
 

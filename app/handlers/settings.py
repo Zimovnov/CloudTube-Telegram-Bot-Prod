@@ -1,12 +1,14 @@
-﻿from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.config import ALLOWED_USERS
+from app.access import PLAN_FREE, PLAN_PREMIUM_LIFETIME, get_user_profile, is_premium_plan
+from app.config import FREE_MAX_DURATION_SECONDS, FREE_MONTHLY_LIMIT, PREMIUM_MAX_DURATION_SECONDS, PREMIUM_MONTHLY_STARS
 from app.i18n import get_lang, pack_mark, t, tf
 from app.jobs import allow_settings_change
 from app.logging_utils import log_event
 from app.settings_store import get_user_settings, set_user_settings
+from app.usage import get_free_usage_count
 
 
 def mk(button_rows):
@@ -68,10 +70,6 @@ async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.message.from_user
 
     user_id = user.id
-    if user_id not in ALLOWED_USERS:
-        await source.reply_text(t("owners_only", "ru"))
-        return
-
     s = await get_user_settings(user_id)
     lang = await get_lang(user_id, user.language_code)
     await source.reply_text(t("menu_title", lang), reply_markup=build_main_settings_markup(s, lang))
@@ -84,6 +82,7 @@ async def _settings_action_reset_confirm(query, user_id, lang):
         "trim": {"soundcloud": "ask", "youtube": "ask"},
         "logs": False,
         "language": "ru",
+        "metadata_prompt_enabled": True,
     }
     await set_user_settings(user_id, s)
     await _safe_edit(query, t("reset_done", lang))
@@ -117,14 +116,24 @@ async def _settings_action_back(query, user_id):
     await _safe_edit(query, t("menu_title", lang), reply_markup=build_main_settings_markup(s, lang))
 
 
-async def _show_format_root(query, lang):
+async def _show_format_root(query, s, lang, is_premium):
     kb = [
         [
             InlineKeyboardButton(t("soundcloud", lang), callback_data="settings:format_platform:soundcloud"),
             InlineKeyboardButton(t("youtube", lang), callback_data="settings:format_platform:youtube"),
         ],
-        [InlineKeyboardButton(t("back", lang), callback_data="settings:back")],
     ]
+    if is_premium:
+        val = t("yes", lang) if bool(s.get("metadata_prompt_enabled", True)) else t("no", lang)
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    tf("metadata_prompt_toggle", lang, value=val),
+                    callback_data="settings:toggle_metadata_prompt",
+                )
+            ]
+        )
+    kb.append([InlineKeyboardButton(t("back", lang), callback_data="settings:back")])
     await _safe_edit(query, f"{t('format_quality', lang)} — {t('back', lang)}", reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -238,12 +247,51 @@ async def _toggle_logs(query, s, user_id, lang):
     await _safe_edit(query, t("logs_on", lang) if new else t("logs_off", lang))
 
 
-async def _show_limits(query, lang):
-    await _safe_edit(
-        query,
-        t("limits_text", lang),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]),
-    )
+async def _toggle_metadata_prompt(query, s, user_id, lang):
+    profile = await get_user_profile(user_id)
+    if not is_premium_plan(profile.get("plan_type")):
+        await _safe_edit(query, t("metadata_premium_only", lang))
+        return
+    prev = bool(s.get("metadata_prompt_enabled", True))
+    s["metadata_prompt_enabled"] = not prev
+    await set_user_settings(user_id, s)
+    val = t("yes", lang) if s["metadata_prompt_enabled"] else t("no", lang)
+    await _safe_edit(query, tf("metadata_prompt_saved", lang, value=val))
+
+
+async def _show_limits(query, user_id, lang):
+    profile = await get_user_profile(user_id)
+    usage_count = await get_free_usage_count(user_id)
+    plan = profile.get("plan_type")
+    if plan == PLAN_FREE:
+        text = tf(
+            "limits_free_text",
+            lang,
+            count=usage_count,
+            limit=FREE_MONTHLY_LIMIT,
+            max_hours=int(FREE_MAX_DURATION_SECONDS / 3600),
+            premium_stars=PREMIUM_MONTHLY_STARS,
+        )
+        kb = [
+            [InlineKeyboardButton(t("buy_premium_button", lang), callback_data="sub:buy_monthly")],
+            [InlineKeyboardButton(t("back", lang), callback_data="settings:back")],
+        ]
+    elif plan == PLAN_PREMIUM_LIFETIME:
+        text = tf(
+            "limits_premium_lifetime_text",
+            lang,
+            max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
+        )
+        kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
+    else:
+        text = tf(
+            "limits_premium_monthly_text",
+            lang,
+            max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
+            expires_at_utc=profile.get("plan_expires_at_utc") or "-",
+        )
+        kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
+    await _safe_edit(query, text, reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def _show_language(query, s, lang):
@@ -284,17 +332,15 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = query.from_user
     user_id = user.id
-    if user_id not in ALLOWED_USERS:
-        try:
-            await query.answer(t("not_for_you", "ru"), show_alert=True)
-        except BadRequest:
-            pass
-        return
 
     data = query.data
+    if data == "noop":
+        return
     parts = data.split(":")
     s = await get_user_settings(user_id)
     lang = await get_lang(user_id, user.language_code)
+    profile = await get_user_profile(user_id)
+    premium = is_premium_plan(profile.get("plan_type"))
 
     if not allow_settings_change(user_id):
         try:
@@ -310,6 +356,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "settings:version": lambda: _settings_action_version(query, lang),
         "settings:close": lambda: _settings_action_close(query, lang),
         "settings:back": lambda: _settings_action_back(query, user_id),
+        "settings:toggle_metadata_prompt": lambda: _toggle_metadata_prompt(query, s, user_id, lang),
     }
     route = static_routes.get(data)
     if route:
@@ -319,10 +366,10 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 2:
         action = parts[1]
         simple_routes = {
-            "format": lambda: _show_format_root(query, lang),
+            "format": lambda: _show_format_root(query, s, lang, premium),
             "trimming": lambda: _show_trimming_root(query, lang),
             "logs": lambda: _toggle_logs(query, s, user_id, lang),
-            "limits": lambda: _show_limits(query, lang),
+            "limits": lambda: _show_limits(query, user_id, lang),
             "language": lambda: _show_language(query, s, lang),
             "support": lambda: _show_support(query, lang),
             "reset": lambda: _show_reset(query, lang),

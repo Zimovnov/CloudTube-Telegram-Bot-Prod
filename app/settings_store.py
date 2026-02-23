@@ -1,8 +1,7 @@
-﻿import asyncio
+import asyncio
 import json
 
 from app import state
-from app.config import ALLOWED_USERS
 from app.jobs import RedisError, _get_redis_client, _log_redis_issue, _redis_key
 from app.logging_utils import log_event
 
@@ -14,6 +13,7 @@ def normalize_settings(s):
         "trim": {"soundcloud": "ask", "youtube": "ask"},
         "logs": False,
         "language": "ru",
+        "metadata_prompt_enabled": True,
     }
     if not isinstance(s, dict):
         return default
@@ -55,6 +55,7 @@ def normalize_settings(s):
     out["logs"] = bool(s.get("logs", default["logs"]))
     lang = s.get("language", default["language"])
     out["language"] = lang if lang in ("ru", "en") else default["language"]
+    out["metadata_prompt_enabled"] = bool(s.get("metadata_prompt_enabled", default["metadata_prompt_enabled"]))
 
     return out
 
@@ -179,7 +180,7 @@ async def set_user_settings(user_id, new_settings):
 
 
 def get_user_logs_enabled_sync(user_id, default=False):
-    if user_id is None or user_id not in ALLOWED_USERS:
+    if user_id is None:
         return default
     try:
         settings = get_user_settings_sync(user_id)
