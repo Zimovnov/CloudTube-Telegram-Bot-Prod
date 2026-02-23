@@ -1,0 +1,23 @@
+# Python cache / env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+
+# Local runtime files
+logs/
+*.log
+.env
+
+# Local media/tooling blobs (do not store in git)
+ffmpeg/
+
+# OS / editor noise
+.vscode/
+Thumbs.db
+.DS_Store
+
+cookies.txt
+
+!.env.example

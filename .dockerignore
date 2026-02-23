@@ -1,0 +1,26 @@
+# Игнорируем виртуальное окружение
+venv/
+__pycache__/
+
+# Настройки редактора
+.vscode/
+
+# Логи
+*.log
+
+# Системные файлы Windows
+Thumbs.db
+.DS_Store
+
+# Личные данные, их лучше подключать через volume
+.env
+cookies.txt
+users_settings.json
+
+# Любой временный мусор
+*.pyc
+*.pyo
+*.pyd
+
+logs/
+ffmpeg/
