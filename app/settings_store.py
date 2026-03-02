@@ -11,7 +11,7 @@ def normalize_settings(s):
         "format": {"soundcloud": "audio", "youtube": "ask"},
         "quality": {"soundcloud": "best", "youtube": "best"},
         "trim": {"soundcloud": "ask", "youtube": "ask"},
-        "logs": False,
+        "logs": True,
         "language": "ru",
         "metadata_prompt_enabled": True,
     }

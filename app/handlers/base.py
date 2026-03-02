@@ -37,7 +37,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cancel — отменить текущий шаг\n"
         "/help — эта справка\n"
         "/settings — открыть меню настроек\n"
-        "/premium — оформить Premium за Stars\n\n"
+        "/premium — оформить Premium\n\n"
         "Просто пришли ссылку на трек или видео."
     )
     if lang == "en":
@@ -48,7 +48,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/cancel — cancel current step\n"
             "/help — this help\n"
             "/settings — open settings\n"
-            "/premium — buy Premium with Stars\n\n"
+            "/premium — buy Premium\n\n"
             "Just send a track or video link."
         )
     if can_admin:

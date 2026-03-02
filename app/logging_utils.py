@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 from datetime import datetime
+from datetime import timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -41,7 +42,16 @@ from app.errors import (
 )
 
 _URL_FIELD_KEYS = {"url", "source_url", "request_url", "link"}
-_USER_ID_FIELD_KEYS = {"user_id", "owner_id", "uid"}
+_USER_ID_FIELD_KEYS = {
+    "user_id",
+    "owner_id",
+    "uid",
+    "target_user_id",
+    "actor_user_id",
+    "granted_by",
+    "revoked_by",
+    "initiator_user_id",
+}
 _SENSITIVE_QUERY_RE = re.compile(
     r"(?i)\b(token|access[_-]?token|api[_-]?key|signature|sig|auth|password|pass|cookie|session|sid|bot_token|redis_password)\b=([^&\\s]+)"
 )
@@ -69,7 +79,7 @@ class JsonLogFormatter(logging.Formatter):
             payload = {"message": str(payload)}
 
         base = {
-            "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "level": record.levelname,
             "logger": record.name,
         }

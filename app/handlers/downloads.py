@@ -234,7 +234,20 @@ def schedule_download_background(
                 max_duration_seconds=max_duration_seconds,
             )
             try:
-                await target_message.reply_text(t("send_another", lang))
+                profile = await get_user_profile(user_id)
+                policy = await resolve_user_download_policy(profile)
+                if policy["blocked_by_limit"]:
+                    await target_message.reply_text(
+                        tf(
+                            "free_limit_reached",
+                            lang,
+                            count=policy["usage_count"],
+                            limit=policy["free_limit"],
+                        ),
+                        reply_markup=build_premium_markup(lang),
+                    )
+                else:
+                    await target_message.reply_text(t("send_another", lang))
             except Exception:
                 pass
         except asyncio.CancelledError:

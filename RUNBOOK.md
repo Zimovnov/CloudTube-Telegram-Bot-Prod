@@ -1,6 +1,6 @@
-# RUNBOOK (Production v3)
+# RUNBOOK (Production v4)
 
-Короткая эксплуатационная инструкция для Telegram-бота с Free/Premium, Stars-подпиской, RBAC и metadata-flow.
+Короткая эксплуатационная инструкция для Telegram-бота с Free/Premium, оплатой через Stars/ЮKassa, PostgreSQL-хранилищем платежей, RBAC и metadata-flow.
 
 ## 1. Что теперь работает
 
@@ -10,7 +10,7 @@
   - лимит длительности контента: 3 часа.
   - metadata edit недоступен.
 - `premium_monthly`:
-  - оплата `75 Stars` через Telegram invoice (`XTR`).
+  - оплата через Telegram Stars (`XTR`) и/или ЮKassa (`RUB`).
   - период: 30 дней.
   - безлимит по количеству выдач.
   - лимит длительности: 10 часов.
@@ -41,17 +41,22 @@
 5. Ошибки/таймауты/отмена не увеличивают счетчик.
 6. Если задача завершилась в новом месяце, учитывается месяц завершения (UTC).
 
-## 3. Как работает Stars-подписка
+## 3. Как работает оплата Premium
 
 1. Пользователь вызывает `/premium` или кнопку `Купить Premium`.
-2. Бот отправляет invoice:
+2. Если настроены оба канала, бот показывает выбор: Stars или ЮKassa.
+3. Stars:
    - `currency = XTR`
-   - `amount = 75`
-   - `subscription_period = 2592000` (30 дней).
-3. `successful_payment` обрабатывается идемпотентно по `telegram_payment_charge_id`.
-4. Продление:
+   - `amount = PREMIUM_MONTHLY_STARS`
+   - `subscription_period = PREMIUM_PERIOD_SECONDS`.
+4. ЮKassa:
+   - создается платеж в API ЮKassa,
+   - пользователь платит по `confirmation_url`,
+   - затем нажимает кнопку `Проверить оплату`.
+5. Любой успешный платеж обрабатывается идемпотентно через PostgreSQL (`orders` + `payments`).
+6. Продление:
    - `new_expire = max(now_utc, current_expires_at) + 30 дней`.
-5. При истечении monthly-плана пользователь автоматически становится `free`.
+7. При истечении monthly-плана пользователь автоматически становится `free`.
 
 ## 4. Metadata-flow (Premium, audio-only)
 
@@ -74,7 +79,10 @@
 ## 5. Безопасность (операционный минимум)
 
 - dedup Telegram updates по `update_id`.
-- dedup платежей по `telegram_payment_charge_id`.
+- dedup платежей по уникальным ключам в PostgreSQL:
+  - `payments(provider, provider_payment_id)`
+  - `payments(idempotency_key)`
+  - `orders(idempotency_key)`
 - RBAC-проверка на каждой защищенной админ-операции.
 - критичные операции только в приватном чате с ботом.
 - админ-операции изменения ролей/планов идут через двухшаговое подтверждение (nonce + TTL).
@@ -142,12 +150,27 @@ docker compose ps redis
 docker compose logs --tail 200 redis
 ```
 
+Проверка PostgreSQL:
+
+```powershell
+docker compose ps postgres
+docker compose logs --tail 200 postgres
+```
+
 ## 8. Что делать если...
 
 ### 8.1 Не проходит оплата / дубли платежей
-- Смотреть события `payment.*`, `subscription.*`.
+- Смотреть события `payment.*`, `subscription.*`, `payments.db.*`.
 - Проверить, что нет всплеска `payment.duplicate_ignored`.
-- Проверить currency `XTR` и корректность invoice.
+- Для Stars: проверить currency `XTR` и корректность invoice.
+- Для ЮKassa: проверить `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`, `YOOKASSA_RETURN_URL`.
+- Убедиться, что PostgreSQL доступен и созданы таблицы:
+  - `users`
+  - `products`
+  - `orders`
+  - `payments`
+  - `refunds`
+  - `audit_log`
 
 ### 8.2 Пользователь жалуется на блокировку Free
 - Проверить `limit.free.blocked`.
@@ -208,3 +231,67 @@ docker compose logs --tail 200 redis
 
 - `ACCEPTANCE_CHECKLIST.md`
 - `ADMIN_COMMANDS_GUIDE.md` (практический гайд по админ-командам и примерам)
+
+## 12. Ежедневный Чеклист (Прод, 3-5 минут)
+
+1. Проверка контейнеров:
+```powershell
+docker compose ps
+```
+Ожидаемо: `bot`, `postgres`, `redis` в `Up`/`healthy`.
+
+2. Проверка ошибок в логах бота:
+```powershell
+docker compose logs --tail 200 bot
+```
+Проверь, что нет `payments.db.unavailable`, `authentication failed`, частых `payment.flow.failed`.
+
+3. Быстрый контроль таблиц:
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "\dt"
+```
+Ожидаемо: `users`, `products`, `orders`, `payments`, `refunds`, `audit_log`.
+
+4. Проверка зависших платежей:
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, provider, provider_payment_id, status, is_processed, created_at FROM payments WHERE status IN ('pending','waiting_for_capture') ORDER BY created_at ASC LIMIT 20;"
+```
+Если есть очень старые записи - проверь вручную источник платежа.
+
+5. Проверка дублей (идемпотентность):
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT provider, provider_payment_id, COUNT(*) FROM payments GROUP BY provider, provider_payment_id HAVING COUNT(*) > 1;"
+```
+Ожидаемо: 0 строк.
+
+6. Проверка неучтенных успешных платежей:
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, provider, provider_payment_id, status, is_processed, updated_at FROM payments WHERE status='succeeded' AND is_processed=false ORDER BY updated_at DESC LIMIT 20;"
+```
+Ожидаемо: пусто.
+
+7. Проверка всплеска ошибок по статусам (24 часа):
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT status, COUNT(*) FROM payments WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY status ORDER BY COUNT(*) DESC;"
+```
+Если `failed/blocked/canceled` резко растут - инцидент, смотри логи `payment.*`.
+
+8. Проверка refunds:
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, payment_id, status, amount_minor, currency, created_at FROM refunds ORDER BY created_at DESC LIMIT 20;"
+```
+Проверь корректность статусов и сумм.
+
+9. Проверка audit-log:
+```powershell
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, event_type, severity, provider, created_at FROM audit_log ORDER BY id DESC LIMIT 30;"
+```
+Проверь, что нет аномально большого количества `WARNING`.
+
+10. Контроль секретов (раз в неделю):
+- убедиться, что `.env` не попал в git/логи;
+- проверить актуальность:
+  - `POSTGRES_PASSWORD`
+  - `PAYMENTS_DATABASE_URL`
+  - `YOOKASSA_SECRET_KEY`
+  - `BOT_TOKEN`

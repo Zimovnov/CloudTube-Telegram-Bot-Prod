@@ -78,6 +78,15 @@ def parse_utc_iso(value):
     return dt.astimezone(timezone.utc)
 
 
+def format_utc_iso_for_display(value):
+    if not value:
+        return "-"
+    dt = parse_utc_iso(value)
+    if not dt:
+        return str(value).strip() or "-"
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 def utc_month_label(now=None):
     dt = now or utc_now()
     return dt.strftime("%Y%m")

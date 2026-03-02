@@ -2,7 +2,7 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.access import PLAN_FREE, PLAN_PREMIUM_LIFETIME, get_user_profile, is_premium_plan
+from app.access import PLAN_FREE, PLAN_PREMIUM_LIFETIME, format_utc_iso_for_display, get_user_profile, is_premium_plan
 from app.config import FREE_MAX_DURATION_SECONDS, FREE_MONTHLY_LIMIT, PREMIUM_MAX_DURATION_SECONDS, PREMIUM_MONTHLY_STARS
 from app.i18n import get_lang, pack_mark, t, tf
 from app.jobs import allow_settings_change
@@ -288,7 +288,7 @@ async def _show_limits(query, user_id, lang):
             "limits_premium_monthly_text",
             lang,
             max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
-            expires_at_utc=profile.get("plan_expires_at_utc") or "-",
+            expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
         )
         kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
     await _safe_edit(query, text, reply_markup=InlineKeyboardMarkup(kb))

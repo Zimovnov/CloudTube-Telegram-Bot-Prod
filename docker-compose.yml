@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: soundcloud_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=soundbot
+      - POSTGRES_USER=soundbot
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soundbot -d soundbot"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   redis:
     image: redis:7.4-alpine
     container_name: soundcloud_redis
@@ -11,11 +27,11 @@ services:
       - "60"
       - "1"
       - --requirepass
-      - ${REDIS_PASSWORD:-change-me-redis-pass}
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-change-me-redis-pass}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -28,9 +44,14 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-redis-pass}@redis:6379/0
+      - REDIS_URL=${REDIS_URL:?REDIS_URL is required}
       - REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-soundbot}
       - REDIS_REQUIRED=${REDIS_REQUIRED:-1}
+      - PAYMENTS_DATABASE_URL=${PAYMENTS_DATABASE_URL:?PAYMENTS_DATABASE_URL is required}
+      - PAYMENTS_DB_REQUIRED=${PAYMENTS_DB_REQUIRED:-1}
+      - PAYMENTS_DB_CONNECT_TIMEOUT=${PAYMENTS_DB_CONNECT_TIMEOUT:-5}
+      - PAYMENTS_ALERT_WINDOW_SECONDS=${PAYMENTS_ALERT_WINDOW_SECONDS:-900}
+      - PAYMENTS_ALERT_THRESHOLD=${PAYMENTS_ALERT_THRESHOLD:-10}
       - LOG_TO_STDOUT=${LOG_TO_STDOUT:-1}
       - LOG_TO_FILE=${LOG_TO_FILE:-1}
       - LOG_FILE=${LOG_FILE:-/app/logs/bot.log}
@@ -39,6 +60,8 @@ services:
       - FFMPEG_REQUIRED_ON_STARTUP=${FFMPEG_REQUIRED_ON_STARTUP:-1}
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     volumes:
       - ./cookies.txt:/app/cookies.txt
@@ -51,3 +74,4 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:

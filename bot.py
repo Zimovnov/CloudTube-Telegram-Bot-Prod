@@ -57,6 +57,7 @@ from app.handlers.settings import settings_callback, settings_menu
 from app.i18n import setup_bot_commands
 from app.jobs import init_redis_client, resolve_ffmpeg_path
 from app.logging_utils import log_event
+from app.payments_store import init_payments_store_sync
 from app.state import BACKGROUND_JOB_TASKS, BACKGROUND_JOB_TASKS_LOCK
 
 
@@ -134,6 +135,7 @@ def main():
         )
 
     init_redis_client()
+    init_payments_store_sync()
     bootstrap_superadmin_sync()
     app = (
         ApplicationBuilder()

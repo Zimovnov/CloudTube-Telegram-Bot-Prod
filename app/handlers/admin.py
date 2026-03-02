@@ -16,6 +16,7 @@ from app.access import (
     apply_admin_payload_sync,
     create_admin_nonce,
     consume_admin_nonce,
+    format_utc_iso_for_display,
     get_user_profile,
     rbac_check,
 )
@@ -97,7 +98,7 @@ async def admin_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lang,
             user_id=target_id,
             plan_type=profile.get("plan_type"),
-            plan_expires_at_utc=profile.get("plan_expires_at_utc") or "-",
+            plan_expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
             role=profile.get("role"),
         )
     )
@@ -469,7 +470,7 @@ async def admin_operation_callback(update: Update, context: ContextTypes.DEFAULT
             lang,
             target_user_id=details.get("user_id"),
             plan_type=details.get("plan_type"),
-            plan_expires_at_utc=details.get("plan_expires_at_utc") or "-",
+            plan_expires_at_utc=format_utc_iso_for_display(details.get("plan_expires_at_utc")),
         )
     elif op == "set_role":
         text = tf(

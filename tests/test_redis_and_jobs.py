@@ -70,7 +70,7 @@ class RedisAndJobsTests(unittest.TestCase):
         uid = "1001"
         defaults = settings_store.get_user_settings_sync(uid)
         self.assertEqual(defaults["language"], "ru")
-        self.assertFalse(defaults["logs"])
+        self.assertTrue(defaults["logs"])
 
         settings_store.set_user_settings_sync(uid, {"language": "en", "logs": True})
         saved = settings_store.get_user_settings_sync(uid)
