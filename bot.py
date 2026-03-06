@@ -23,6 +23,7 @@ from app.config import (
     LOG_HASH_SALT_STRICT,
     LOG_USER_HASH_SALT,
     TOKEN,
+    validate_runtime_configuration,
 )
 from app.errors import ERR_FFMPEG_MISSING, ERR_SECURITY_WEAK_HASH_SALT
 from app.handlers.admin import (
@@ -57,6 +58,7 @@ from app.handlers.settings import settings_callback, settings_menu
 from app.i18n import setup_bot_commands
 from app.jobs import init_redis_client, resolve_ffmpeg_path
 from app.logging_utils import log_event
+from app.payment_runtime import start_payment_runtime, stop_payment_runtime
 from app.payments_store import init_payments_store_sync
 from app.state import BACKGROUND_JOB_TASKS, BACKGROUND_JOB_TASKS_LOCK
 
@@ -96,9 +98,14 @@ async def _post_init(application):
     task = asyncio.create_task(metadata_expiry_sweeper(application))
     application.bot_data["metadata_expiry_sweeper_task"] = task
     _track_background_task(task)
+    await start_payment_runtime(application)
+    reconcile_task = application.bot_data.get("payment_reconcile_task")
+    if reconcile_task is not None:
+        _track_background_task(reconcile_task)
 
 
 async def _post_shutdown(application):
+    await stop_payment_runtime(application)
     task = application.bot_data.pop("metadata_expiry_sweeper_task", None)
     if task:
         task.cancel()
@@ -109,6 +116,7 @@ async def _post_shutdown(application):
 
 
 def main():
+    validate_runtime_configuration()
     ffmpeg_path = resolve_ffmpeg_path()
     if not ffmpeg_path:
         msg = "FFmpeg не найден в PATH и не задан через FFMPEG_PATH/FFMPEG_BIN/FFMPEG_DIR."

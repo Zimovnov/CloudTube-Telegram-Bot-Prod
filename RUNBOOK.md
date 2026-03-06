@@ -1,297 +1,298 @@
-# RUNBOOK (Production v4)
+# RUNBOOK
 
-Короткая эксплуатационная инструкция для Telegram-бота с Free/Premium, оплатой через Stars/ЮKassa, PostgreSQL-хранилищем платежей, RBAC и metadata-flow.
+## 1. What changed
 
-## 1. Что теперь работает
+- Premium activation for payment flows is now finalized inside PostgreSQL in the same transaction as `payments.is_processed=true`.
+- YooKassa is no longer dependent on the user's "Check payment" button. The bot supports:
+  - `POST /webhooks/yookassa`
+  - background reconciliation of `pending` and `waiting_for_capture`
+  - manual "Check payment" as an auxiliary UX path
+- Runtime DDL was removed from the app. Schema changes are applied only through SQL migrations.
+- In strict production mode the app fails fast on insecure or incomplete payment/Redis configuration.
 
-### 1.1 Планы
-- `free`:
-  - 42 успешные выдачи в UTC-месяц (`YYYYMM`).
-  - лимит длительности контента: 3 часа.
-  - metadata edit недоступен.
-- `premium_monthly`:
-  - оплата через Telegram Stars (`XTR`) и/или ЮKassa (`RUB`).
-  - период: 30 дней.
-  - безлимит по количеству выдач.
-  - лимит длительности: 10 часов.
-  - metadata edit доступен.
-- `premium_lifetime`:
-  - по возможностям как `premium_monthly`, без даты истечения.
-  - выдается вручную админ-процедурой.
+## 2. Core components
 
-### 1.2 Роли
-- `user`: обычный пользователь.
-- `admin`: поддержка и управление планами.
-- `superadmin`: полный контроль ролей (включая выдачу/снятие `admin`).
+- PostgreSQL:
+  - payments, orders, refunds, audit
+  - `subscription_entitlements`
+  - `payment_sessions`
+  - `schema_migrations`
+- Redis:
+  - settings, RBAC helper state, throttling, nonces, usage counters
+- Bot process:
+  - Telegram polling
+  - embedded `aiohttp` webhook listener
+  - YooKassa reconciliation loop
 
-Важно: `role` и `plan` независимы.
+## 3. Required env
 
-### 1.3 Антиспам
-- 1 параллельная задача на пользователя.
-- cooldown между запусками.
+Mandatory for the migration step:
 
-## 2. Как считается лимит Free (42/месяц)
+```powershell
+BOT_TOKEN=...
+PAYMENTS_DATABASE_URL=postgresql://...
+MIGRATIONS_DATABASE_URL=postgresql://...
+REDIS_URL=redis://...   # dev
+```
 
-1. Проверка выполняется перед запуском задачи.
-2. Если `count >= 42`, задача блокируется, показывается предложение Premium.
-3. Инкремент делается только после успешной выдачи:
-   - файл отправлен в Telegram
-   - или успешно отправлено сообщение со ссылкой.
-4. Инкремент строго один раз на `job_id` (dedup).
-5. Ошибки/таймауты/отмена не увеличивают счетчик.
-6. Если задача завершилась в новом месяце, учитывается месяц завершения (UTC).
+Production-only expectations:
 
-## 3. Как работает оплата Premium
+```powershell
+APP_ENV=prod
+PAYMENTS_STRICT_PROD=1
+PAYMENTS_DB_REQUIRED=1
+PAYMENTS_ALLOW_INMEMORY_FALLBACK=0
+REDIS_REQUIRED=1
+PAYMENTS_DATABASE_URL=postgresql://...?...sslmode=require
+MIGRATIONS_DATABASE_URL=postgresql://...?...sslmode=require
+REDIS_URL=rediss://...
+YOOKASSA_WEBHOOK_ENABLED=1
+YOOKASSA_WEBHOOK_BIND_HOST=0.0.0.0
+YOOKASSA_WEBHOOK_BIND_PORT=8080
+YOOKASSA_WEBHOOK_PATH=/webhooks/yookassa
+YOOKASSA_RECONCILE_ENABLED=1
+YOOKASSA_RECONCILE_INTERVAL_SEC=60
+```
 
-1. Пользователь вызывает `/premium` или кнопку `Купить Premium`.
-2. Если настроены оба канала, бот показывает выбор: Stars или ЮKassa.
-3. Stars:
-   - `currency = XTR`
-   - `amount = PREMIUM_MONTHLY_STARS`
-   - `subscription_period = PREMIUM_PERIOD_SECONDS`.
-4. ЮKassa:
-   - создается платеж в API ЮKassa,
-   - пользователь платит по `confirmation_url`,
-   - затем нажимает кнопку `Проверить оплату`.
-5. Любой успешный платеж обрабатывается идемпотентно через PostgreSQL (`orders` + `payments`).
-6. Продление:
-   - `new_expire = max(now_utc, current_expires_at) + 30 дней`.
-7. При истечении monthly-плана пользователь автоматически становится `free`.
+Notes:
 
-## 4. Metadata-flow (Premium, audio-only)
+- In local docker-compose the default `APP_ENV` is `dev`, so strict TLS enforcement is not applied by default.
+- In production, insecure PostgreSQL/Redis transport blocks startup.
 
-1. После успешной отправки mp3 (если включено в настройках) показывается:
-   - `Изменить данные`
-   - `Оставить`
-2. В меню редактирования:
-   - `Изменить название`
-   - `Изменить автора`
-   - `Отмена`
-3. После изменения хотя бы одного поля появляется `Получить файл`.
-4. По `Получить файл`:
-   - изменения применяются к рабочему файлу
-   - edited-файл отправляется
-   - сессия закрывается.
-5. TTL сессии: 1 час с последнего действия.
-6. По TTL удаляются файл и состояние; пользователю отправляется:
-   - `Сессия редактирования истекла (1 час). Отправьте ссылку заново.`
+## 4. Bootstrap and deployment
 
-## 5. Безопасность (операционный минимум)
-
-- dedup Telegram updates по `update_id`.
-- dedup платежей по уникальным ключам в PostgreSQL:
-  - `payments(provider, provider_payment_id)`
-  - `payments(idempotency_key)`
-  - `orders(idempotency_key)`
-- RBAC-проверка на каждой защищенной админ-операции.
-- критичные операции только в приватном чате с ботом.
-- админ-операции изменения ролей/планов идут через двухшаговое подтверждение (nonce + TTL).
-- запреты:
-  - self-escalation
-  - снятие последнего `superadmin`.
-- audit events пишутся для изменений ролей/планов.
-
-## 6. Запуск/перезапуск
-
-Работать из корня проекта:
+From project root:
 
 ```powershell
 cd c:\Users\zimov\soundcloud_bot
 ```
 
-Первый запуск / после изменений:
+Build images:
 
 ```powershell
-docker compose up -d --build
+docker compose build
 ```
 
-Перезапуск только бота:
+Apply migrations:
+
+```powershell
+docker compose run --rm migrate
+```
+
+Start infra and bot:
+
+```powershell
+docker compose up -d postgres redis bot
+```
+
+Rebuild only the bot:
 
 ```powershell
 docker compose up -d --build bot
 ```
 
-Если меняли только `.env`:
-
-```powershell
-docker compose up -d --force-recreate bot
-```
-
-Остановить:
+Stop everything:
 
 ```powershell
 docker compose down
 ```
 
-## 7. Логи и health-check
+## 5. Test commands
 
-Логи бота:
+Project venv unit/regression run:
+
+```powershell
+venv\Scripts\python.exe -m pytest -q
+```
+
+Live PostgreSQL + Redis smoke inside the compose network:
+
+```powershell
+docker compose up -d postgres redis
+docker compose run --rm migrate
+docker compose run --rm --no-deps -e RUN_PAYMENTS_INTEGRATION=1 bot python -m pytest -q -p no:cacheprovider tests/test_payments_integration_smoke.py
+```
+
+YooKassa mock reconciliation smoke only:
+
+```powershell
+docker compose run --rm --no-deps -e RUN_PAYMENTS_INTEGRATION=1 bot python -m pytest -q -p no:cacheprovider tests/test_payments_integration_smoke.py -k yookassa
+```
+
+YooKassa webhook HTTP endpoint smoke:
+
+```powershell
+docker compose run --rm --no-deps -e RUN_PAYMENTS_INTEGRATION=1 bot python -m pytest -q -p no:cacheprovider tests/test_payments_integration_smoke.py -k webhook_http_endpoint
+```
+
+What the live smoke verifies:
+
+- real PostgreSQL migrations and payment schema are usable
+- real Redis-backed throttling path is usable
+- payment finalization is atomic and idempotent
+- `payment_sessions` reuse the same pending YooKassa payment
+- mocked YooKassa reconciliation finalizes a pending payment without user action
+- lifetime entitlement is not downgraded by a monthly payment
+
+## 6. Webhook and payment operations
+
+Internal webhook endpoint:
+
+```text
+POST /webhooks/yookassa
+```
+
+Webhook behavior:
+
+1. Accept event.
+2. Extract `payment_id`.
+3. Fetch payment state from YooKassa server-to-server.
+4. Validate amount/currency and strict metadata:
+   - `metadata.user_id` required
+   - `metadata.plan_type` required
+   - values must match expected payment data
+5. Finalize payment and entitlement in one PostgreSQL transaction.
+
+Reconciliation behavior:
+
+- polls unprocessed `pending` and `waiting_for_capture`
+- re-fetches payment status from YooKassa
+- finalizes successful payments without user interaction
+
+## 7. YooKassa sandbox and mock
+
+For local development there are two supported provider modes:
+
+- mock mode for CI/local smoke: the test suite monkeypatches `app.payment_service.get_yookassa_payment`, so PostgreSQL finalization and reconciliation are exercised without live YooKassa credentials
+- sandbox/real API mode: keep the same server-side flow, but point env to valid YooKassa credentials and callback URL
+
+Minimum env for sandbox/real API:
+
+```powershell
+YOOKASSA_SHOP_ID=...
+YOOKASSA_SECRET_KEY=...
+YOOKASSA_RETURN_URL=https://example.test/payments/return
+YOOKASSA_API_BASE=https://api.yookassa.ru/v3
+YOOKASSA_WEBHOOK_ENABLED=1
+YOOKASSA_WEBHOOK_PATH=/webhooks/yookassa
+YOOKASSA_RECONCILE_ENABLED=1
+```
+
+Mock mode is the default recommendation before real shop activation, because it validates:
+
+- strict metadata validation
+- duplicate-safe finalization
+- reconciliation behavior
+- notification path after entitlement activation
+
+## 8. Health checks and logs
+
+Containers:
+
+```powershell
+docker compose ps
+```
+
+Bot logs:
 
 ```powershell
 docker compose logs -f bot
 ```
 
-Локальный лог-файл:
+Migration logs:
 
 ```powershell
-Get-Content .\bot.log -Tail 200
+docker compose logs --tail 200 migrate
 ```
 
-Проверка контейнеров:
+PostgreSQL logs:
 
 ```powershell
-docker compose ps
-```
-
-Проверка Redis:
-
-```powershell
-docker compose ps redis
-docker compose logs --tail 200 redis
-```
-
-Проверка PostgreSQL:
-
-```powershell
-docker compose ps postgres
 docker compose logs --tail 200 postgres
 ```
 
-## 8. Что делать если...
+Redis logs:
 
-### 8.1 Не проходит оплата / дубли платежей
-- Смотреть события `payment.*`, `subscription.*`, `payments.db.*`.
-- Проверить, что нет всплеска `payment.duplicate_ignored`.
-- Для Stars: проверить currency `XTR` и корректность invoice.
-- Для ЮKassa: проверить `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`, `YOOKASSA_RETURN_URL`.
-- Убедиться, что PostgreSQL доступен и созданы таблицы:
-  - `users`
-  - `products`
-  - `orders`
-  - `payments`
-  - `refunds`
-  - `audit_log`
-
-### 8.2 Пользователь жалуется на блокировку Free
-- Проверить `limit.free.blocked`.
-- Проверить текущий UTC-месяц и `usage:{user_id}:{YYYYMM}`.
-- Подтвердить, что инкремент идет только на успешные выдачи.
-
-### 8.3 RBAC-отказы
-- Проверить `rbac.denied`.
-- Убедиться, что операция выполняется в private-чате.
-- Проверить роль пользователя (`/admin_profile <user_id>` у superadmin).
-
-### 8.4 Metadata session expired
-- Проверить `metadata.edit.expired`.
-- Это штатное поведение TTL=1h.
-- Пользователь должен отправить ссылку заново.
-
-### 8.5 Redis недоступен
-- Проверить `E_REDIS_UNAVAILABLE`, контейнер и пароль.
-- Бот может работать с локальным fallback, но для прод это нежелательно.
-
-### 8.6 YouTube: `Requested format is not available` / только `mhtml` (storyboard)
-- Причина: `yt-dlp` не может решить YouTube JS challenge (`n challenge`), форматы видео/аудио не извлекаются.
-- Проверить в контейнере:
-  - `node -v` (должен быть установлен runtime)
-  - наличие `cookies.txt` и что файл не пустой
-- Для решения challenge включены настройки:
-  - `YTDLP_JS_RUNTIMES=node`
-  - `YTDLP_REMOTE_COMPONENTS=ejs:github`
-- После обновления `.env` или кода перезапустить:
-  - `docker compose up -d --build bot`
-  - `docker compose logs -f bot`
-
-## 9. Инциденты (минимальный playbook)
-
-1. Экстренный отзыв админ-прав:
-   - superadmin выполняет `admin_setrole <user_id> user <reason>` с подтверждением.
-2. Временная заморозка ручных назначений:
-   - отключить доступ к админ-командам на уровне бота/роутинга (hotfix).
-3. Ротация секретов:
-   - BOT_TOKEN
-   - REDIS_PASSWORD
-   - другие секреты в env/secret-store.
-
-## 10. Проверка воспроизводимости “с нуля”
-
-Функционал считается завершенным только если:
-- обновлены `RUNBOOK.md`, `DEVELOPER_GUIDE.md`, `ERROR.md`;
-- новый инженер может поднять проект по шагам из этого runbook;
-- canary-проверки проходят:
-  1. Free-limit 42/месяц.
-  2. Premium-платеж + продление.
-  3. Metadata-flow + TTL.
-  4. RBAC и двухшаговые admin-операции.
-
-## 11. Ручной чеклист приемки
-
-Пошаговые сценарии AC-1..AC-12 вынесены в:
-
-- `ACCEPTANCE_CHECKLIST.md`
-- `ADMIN_COMMANDS_GUIDE.md` (практический гайд по админ-командам и примерам)
-
-## 12. Ежедневный Чеклист (Прод, 3-5 минут)
-
-1. Проверка контейнеров:
 ```powershell
-docker compose ps
+docker compose logs --tail 200 redis
 ```
-Ожидаемо: `bot`, `postgres`, `redis` в `Up`/`healthy`.
 
-2. Проверка ошибок в логах бота:
-```powershell
-docker compose logs --tail 200 bot
-```
-Проверь, что нет `payments.db.unavailable`, `authentication failed`, частых `payment.flow.failed`.
+Check schema:
 
-3. Быстрый контроль таблиц:
 ```powershell
 docker compose exec postgres psql -U soundbot -d soundbot -c "\dt"
 ```
-Ожидаемо: `users`, `products`, `orders`, `payments`, `refunds`, `audit_log`.
 
-4. Проверка зависших платежей:
+Expected payment tables include:
+
+- `orders`
+- `payments`
+- `refunds`
+- `audit_log`
+- `subscription_entitlements`
+- `payment_sessions`
+- `schema_migrations`
+
+Check unprocessed YooKassa payments:
+
 ```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, provider, provider_payment_id, status, is_processed, created_at FROM payments WHERE status IN ('pending','waiting_for_capture') ORDER BY created_at ASC LIMIT 20;"
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT provider_payment_id, status, is_processed, created_at FROM payments WHERE provider='yookassa' AND status IN ('pending','waiting_for_capture') ORDER BY created_at ASC LIMIT 20;"
 ```
-Если есть очень старые записи - проверь вручную источник платежа.
 
-5. Проверка дублей (идемпотентность):
+Check entitlements:
+
 ```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT provider, provider_payment_id, COUNT(*) FROM payments GROUP BY provider, provider_payment_id HAVING COUNT(*) > 1;"
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT user_id, plan_type, expires_at_utc, source_provider, source_payment_id, version FROM subscription_entitlements ORDER BY updated_at DESC LIMIT 20;"
 ```
-Ожидаемо: 0 строк.
 
-6. Проверка неучтенных успешных платежей:
+## 9. Incident playbook
+
+If YooKassa payment succeeded but Premium is missing:
+
+1. Check bot logs for `payment.invalid`, `payment.webhook.failed`, `payment.reconcile.failed`.
+2. Query the payment row:
+
 ```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, provider, provider_payment_id, status, is_processed, updated_at FROM payments WHERE status='succeeded' AND is_processed=false ORDER BY updated_at DESC LIMIT 20;"
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT provider_payment_id, status, is_processed, invalid_reason, updated_at FROM payments WHERE provider='yookassa' ORDER BY updated_at DESC LIMIT 20;"
 ```
-Ожидаемо: пусто.
 
-7. Проверка всплеска ошибок по статусам (24 часа):
+3. Query entitlement:
+
 ```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT status, COUNT(*) FROM payments WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY status ORDER BY COUNT(*) DESC;"
+docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT * FROM subscription_entitlements WHERE user_id=<telegram_user_id>;"
 ```
-Если `failed/blocked/canceled` резко растут - инцидент, смотри логи `payment.*`.
 
-8. Проверка refunds:
-```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, payment_id, status, amount_minor, currency, created_at FROM refunds ORDER BY created_at DESC LIMIT 20;"
-```
-Проверь корректность статусов и сумм.
+4. If the payment is still `pending` or `waiting_for_capture`, verify webhook delivery and reconciliation settings.
 
-9. Проверка audit-log:
-```powershell
-docker compose exec postgres psql -U soundbot -d soundbot -c "SELECT id, event_type, severity, provider, created_at FROM audit_log ORDER BY id DESC LIMIT 30;"
-```
-Проверь, что нет аномально большого количества `WARNING`.
+If startup fails in production:
 
-10. Контроль секретов (раз в неделю):
-- убедиться, что `.env` не попал в git/логи;
-- проверить актуальность:
-  - `POSTGRES_PASSWORD`
-  - `PAYMENTS_DATABASE_URL`
-  - `YOOKASSA_SECRET_KEY`
-  - `BOT_TOKEN`
+1. Confirm `PAYMENTS_STRICT_PROD=1`.
+2. Confirm PostgreSQL DSN includes `sslmode=require` or stronger.
+3. Confirm Redis uses `rediss://`.
+4. Confirm `MIGRATIONS_DATABASE_URL` is set.
+5. Confirm the schema was applied with `docker compose run --rm migrate`.
+
+If webhook is not receiving events:
+
+1. Check reverse proxy routing to `YOOKASSA_WEBHOOK_PATH`.
+2. Confirm the container listens on `YOOKASSA_WEBHOOK_BIND_PORT`.
+3. Check `payment.webhook.started` in logs.
+4. Confirm upstream TLS termination and public callback URL.
+
+## 10. Production checklist
+
+Daily:
+
+1. `docker compose ps`
+2. `docker compose logs --tail 200 bot`
+3. inspect recent `payment.invalid`, `payment.webhook.failed`, `payment.reconcile.failed`
+4. inspect old pending YooKassa payments
+5. inspect recent entitlement updates
+
+Before release:
+
+1. apply migrations
+2. run test suite
+3. confirm strict prod env
+4. confirm webhook routing
+5. confirm bot runs as non-root container

@@ -17,6 +17,7 @@ from app.config import (
 from app.errors import ERR_LAST_SUPERADMIN, ERR_RBAC_DENIED
 from app.jobs import RedisError, _get_redis_client, _log_redis_issue, _redis_key
 from app.logging_utils import log_event
+from app.payments_store import get_effective_entitlement_sync, payments_store_is_ready, set_plan_entitlement_sync
 from app.usage import reset_free_usage_sync
 
 PLAN_FREE = "free"
@@ -155,6 +156,16 @@ def normalize_profile(data, user_id=None):
 
 def _deepcopy(data):
     return copy.deepcopy(data)
+
+
+def _merge_entitlement(profile):
+    if not payments_store_is_ready():
+        return profile
+    effective = get_effective_entitlement_sync(profile["user_id"])
+    merged = dict(profile)
+    merged["plan_type"] = effective.get("plan_type", PLAN_FREE)
+    merged["plan_expires_at_utc"] = effective.get("plan_expires_at_utc")
+    return merged
 
 
 def _read_profile_redis(client, user_id):
@@ -328,7 +339,7 @@ def get_user_profile_sync(user_id):
             pass
         if changed:
             _write_profile_locked(client, normalized, old_role=payload.get("role"))
-        return _deepcopy(normalized)
+        return _deepcopy(_merge_entitlement(normalized))
 
 
 async def get_user_profile(user_id):
@@ -385,6 +396,43 @@ async def rbac_check(user_id, permission, source="unknown"):
 
 def activate_or_extend_monthly_sync(user_id, charge_id=None, source="payment"):
     uid = int(user_id)
+    if payments_store_is_ready():
+        with state.USER_PROFILE_LOCK:
+            client = _get_redis_client()
+            payload = _read_profile_locked(client, uid)
+            if payload is None:
+                payload = _default_profile(uid)
+                _write_profile_locked(client, payload, old_role=None)
+        old_profile = get_user_profile_sync(uid)
+        profile = set_plan_entitlement_sync(uid, PLAN_PREMIUM_MONTHLY, source_provider=source, source_payment_id=charge_id)
+        event_name = (
+            "subscription.renewed"
+            if old_profile.get("plan_type") == PLAN_PREMIUM_MONTHLY and parse_utc_iso(old_profile.get("plan_expires_at_utc")) and parse_utc_iso(old_profile.get("plan_expires_at_utc")) > utc_now()
+            else "subscription.activated"
+        )
+        log_event(
+            event_name,
+            level="INFO",
+            user_id=uid,
+            plan_type=profile["plan_type"],
+            expires_at_utc=profile["plan_expires_at_utc"],
+            charge_id=charge_id,
+            source=source,
+        )
+        append_audit_event_sync(
+            "plan.changed",
+            target_user_id=uid,
+            granted_by=uid if source == "payment" else None,
+            reason=f"{source}:{charge_id or 'n/a'}",
+            source=source,
+            plan_type=profile["plan_type"],
+            plan_expires_at_utc=profile["plan_expires_at_utc"],
+        )
+        merged = get_user_profile_sync(uid)
+        merged["plan_type"] = profile["plan_type"]
+        merged["plan_expires_at_utc"] = profile["plan_expires_at_utc"]
+        return merged
+
     client = _get_redis_client()
     with state.USER_PROFILE_LOCK:
         profile = normalize_profile(_read_profile_locked(client, uid) or _default_profile(uid), user_id=uid)
@@ -447,6 +495,33 @@ def set_plan_sync(target_user_id, plan_type, actor_user_id=None, reason="", sour
         raise ValueError("invalid_plan_type")
 
     uid = int(target_user_id)
+    if payments_store_is_ready():
+        with state.USER_PROFILE_LOCK:
+            client = _get_redis_client()
+            payload = _read_profile_locked(client, uid)
+            if payload is None:
+                payload = _default_profile(uid)
+                _write_profile_locked(client, payload, old_role=None)
+        old = get_user_profile_sync(uid)
+        result = set_plan_entitlement_sync(uid, plan_type, source_provider=source, source_payment_id=str(actor_user_id) if actor_user_id is not None else None)
+        granted_by = actor_user_id if result["plan_type"] != PLAN_FREE else None
+        revoked_by = actor_user_id if result["plan_type"] == PLAN_FREE and old["plan_type"] != PLAN_FREE else None
+        append_audit_event_sync(
+            "plan.changed",
+            target_user_id=uid,
+            granted_by=granted_by,
+            revoked_by=revoked_by,
+            reason=reason,
+            source=source,
+            old_plan_type=old.get("plan_type"),
+            plan_type=result.get("plan_type"),
+            plan_expires_at_utc=result.get("plan_expires_at_utc"),
+        )
+        merged = get_user_profile_sync(uid)
+        merged["plan_type"] = result["plan_type"]
+        merged["plan_expires_at_utc"] = result["plan_expires_at_utc"]
+        return merged
+
     client = _get_redis_client()
     with state.USER_PROFILE_LOCK:
         profile = normalize_profile(_read_profile_locked(client, uid) or _default_profile(uid), user_id=uid)

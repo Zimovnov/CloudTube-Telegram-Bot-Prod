@@ -81,7 +81,16 @@ def _normalize_payment(data):
     }
 
 
-def create_monthly_payment_sync(user_id):
+def extract_payment_metadata(payment_payload):
+    raw = payment_payload.get("raw") if isinstance(payment_payload, dict) else {}
+    metadata = raw.get("metadata") if isinstance(raw, dict) and isinstance(raw.get("metadata"), dict) else {}
+    return {
+        "user_id": str(metadata.get("user_id") or "").strip(),
+        "plan_type": str(metadata.get("plan_type") or "").strip().lower(),
+    }
+
+
+def create_monthly_payment_sync(user_id, *, idempotence_key=None):
     uid = int(user_id)
     payload = {
         "amount": {
@@ -99,7 +108,7 @@ def create_monthly_payment_sync(user_id):
             "plan_type": "premium_monthly",
         },
     }
-    data = _request("POST", "/payments", payload=payload, idempotence_key=uuid.uuid4().hex)
+    data = _request("POST", "/payments", payload=payload, idempotence_key=idempotence_key or uuid.uuid4().hex)
     return _normalize_payment(data)
 
 
@@ -108,9 +117,9 @@ def get_payment_sync(payment_id):
     return _normalize_payment(data)
 
 
-async def create_monthly_payment(user_id):
+async def create_monthly_payment(user_id, *, idempotence_key=None):
     loop = asyncio.get_running_loop()
-    fn = functools.partial(create_monthly_payment_sync, user_id)
+    fn = functools.partial(create_monthly_payment_sync, user_id, idempotence_key=idempotence_key)
     return await loop.run_in_executor(None, fn)
 
 

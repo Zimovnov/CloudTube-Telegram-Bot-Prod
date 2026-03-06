@@ -18,7 +18,6 @@ from app.config import (
     ASK_TRIM_YT,
     ASK_TYPE,
     MAX_DURATION,
-    YTDLP_COOKIES_FILE,
     YTDLP_JS_RUNTIMES_MAP,
     YTDLP_META_SOCKET_TIMEOUT,
     YTDLP_REMOTE_COMPONENTS,
@@ -68,6 +67,7 @@ from app.jobs import (
     unregister_active_download_task,
     unregister_active_worker_future,
 )
+from app.ytdlp_cookies import prepare_ytdlp_cookiefile
 from app.logging_utils import classify_exception_error_code, log_event, worker_error
 from app.policy import resolve_user_download_policy
 from app.settings_store import (
@@ -991,8 +991,9 @@ async def download_content(
                         'no_warnings': True,
                         'socket_timeout': YTDLP_META_SOCKET_TIMEOUT,
                     }
-                    if platform == "youtube" and YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
-                        ydl_opts_meta["cookiefile"] = YTDLP_COOKIES_FILE
+                    cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
+                    if cookiefile:
+                        ydl_opts_meta["cookiefile"] = cookiefile
                     if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
                         ydl_opts_meta["js_runtimes"] = dict(YTDLP_JS_RUNTIMES_MAP)
                     if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:

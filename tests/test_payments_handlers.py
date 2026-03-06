@@ -2,6 +2,7 @@ import os
 import unittest
 from types import SimpleNamespace
 
+os.environ.setdefault("APP_ENV", "dev")
 os.environ.setdefault("BOT_TOKEN", "test-token")
 
 from app.handlers import payments  # noqa: E402
@@ -52,6 +53,24 @@ class PaymentsHandlersValidationTests(unittest.TestCase):
         ok, reason = payments._validate_yookassa_status_payload(payload_bad_user, 777)
         self.assertFalse(ok)
         self.assertEqual(reason, "metadata_user_mismatch")
+
+        payload_missing_user = {
+            "amount_minor": int(payments.YOOKASSA_PREMIUM_MONTHLY_AMOUNT) * 100,
+            "currency": payments.YOOKASSA_CURRENCY,
+            "raw": {"metadata": {"plan_type": "premium_monthly"}},
+        }
+        ok, reason = payments._validate_yookassa_status_payload(payload_missing_user, 777)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "metadata_user_missing")
+
+        payload_missing_plan = {
+            "amount_minor": int(payments.YOOKASSA_PREMIUM_MONTHLY_AMOUNT) * 100,
+            "currency": payments.YOOKASSA_CURRENCY,
+            "raw": {"metadata": {"user_id": "777"}},
+        }
+        ok, reason = payments._validate_yookassa_status_payload(payload_missing_plan, 777)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "metadata_plan_missing")
 
 
 if __name__ == "__main__":

@@ -52,6 +52,23 @@ _USER_ID_FIELD_KEYS = {
     "revoked_by",
     "initiator_user_id",
 }
+_DROP_FIELD_KEYS = {
+    "authorization",
+    "api_key",
+    "api_token",
+    "bot_token",
+    "dsn",
+    "invoice_payload",
+    "metadata_json",
+    "password",
+    "raw",
+    "raw_body",
+    "raw_payload",
+    "secret",
+    "token",
+    "webhook_body",
+}
+_DROP_FIELD_PARTS = ("password", "secret", "token", "invoice_payload", "raw_payload", "webhook_body", "authorization")
 _SENSITIVE_QUERY_RE = re.compile(
     r"(?i)\b(token|access[_-]?token|api[_-]?key|signature|sig|auth|password|pass|cookie|session|sid|bot_token|redis_password)\b=([^&\\s]+)"
 )
@@ -193,6 +210,9 @@ def anonymize_user_id(user_id):
 
 
 def _sanitize_log_value(key, value):
+    key_text = str(key or "").strip().lower()
+    if key_text in _DROP_FIELD_KEYS or any(part in key_text for part in _DROP_FIELD_PARTS):
+        return None
     if value is None:
         return None
     if isinstance(value, dict):

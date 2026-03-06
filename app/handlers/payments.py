@@ -4,13 +4,7 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.access import (
-    PLAN_PREMIUM_LIFETIME,
-    PLAN_PREMIUM_MONTHLY,
-    activate_or_extend_monthly,
-    format_utc_iso_for_display,
-    get_user_profile,
-)
+from app.access import PLAN_PREMIUM_LIFETIME, PLAN_PREMIUM_MONTHLY, get_user_profile
 from app.config import (
     PREMIUM_MONTHLY_STARS,
     PREMIUM_PERIOD_SECONDS,
@@ -21,11 +15,18 @@ from app.config import (
 from app.errors import ERR_PAYMENT_DUPLICATE, ERR_PAYMENT_INVALID
 from app.i18n import get_lang, t, tf
 from app.logging_utils import log_event
-from app.payments_store import complete_payment_once, get_payment, register_pending_payment, update_payment_status
-from app.yookassa import create_monthly_payment, get_payment as get_yookassa_payment, is_yookassa_configured
-
-PROVIDER_TELEGRAM_STARS = "telegram_stars"
-PROVIDER_YOOKASSA = "yookassa"
+from app.payment_service import (
+    PROVIDER_TELEGRAM_STARS,
+    PROVIDER_YOOKASSA,
+    allow_payment_callback,
+    create_or_reuse_yookassa_payment,
+    finalize_stars_payment,
+    payments_available,
+    validate_yookassa_verified_payload,
+    verify_and_finalize_yookassa_payment,
+)
+from app.payments_store import get_payment
+from app.yookassa import is_yookassa_configured
 
 
 def _stars_enabled():
@@ -33,11 +34,9 @@ def _stars_enabled():
 
 
 def _resolve_payment_methods():
+    if not payments_available():
+        return False, False
     return _stars_enabled(), is_yookassa_configured()
-
-
-def _expected_yookassa_amount_minor():
-    return int(YOOKASSA_PREMIUM_MONTHLY_AMOUNT) * 100
 
 
 def _is_valid_stars_invoice_payload(payload, user_id):
@@ -66,32 +65,12 @@ def _validate_stars_payment(payment, user_id):
 
 
 def _validate_yookassa_status_payload(status_payload, user_id):
-    if not isinstance(status_payload, dict):
-        return False, "invalid_payload"
-    try:
-        amount_minor = int(status_payload.get("amount_minor"))
-    except Exception:
-        return False, "invalid_amount"
-    if amount_minor != _expected_yookassa_amount_minor():
-        return False, "unexpected_amount"
-    if str(status_payload.get("currency") or "").upper() != str(YOOKASSA_CURRENCY).upper():
-        return False, "invalid_currency"
-    raw = status_payload.get("raw") if isinstance(status_payload.get("raw"), dict) else {}
-    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-    metadata_user_id = metadata.get("user_id")
-    if metadata_user_id is not None and str(metadata_user_id).strip():
-        if str(metadata_user_id).strip() != str(int(user_id)):
-            return False, "metadata_user_mismatch"
-    metadata_plan = str(metadata.get("plan_type") or "").strip().lower()
-    if metadata_plan and metadata_plan != PLAN_PREMIUM_MONTHLY:
-        return False, "metadata_plan_mismatch"
-    return True, None
+    valid, reason, _, _ = validate_yookassa_verified_payload(status_payload, expected_user_id=user_id)
+    return valid, reason
 
 
 def build_premium_markup(lang):
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(t("buy_premium_button", lang), callback_data="sub:buy_monthly")]]
-    )
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t("buy_premium_button", lang), callback_data="sub:buy_monthly")]])
 
 
 def _build_payment_methods_markup(lang, has_stars, has_yookassa):
@@ -104,9 +83,7 @@ def _build_payment_methods_markup(lang, has_stars, has_yookassa):
 
 
 def _build_stars_invoice_markup(lang, invoice_url):
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(t("buy_premium_stars_button", lang), url=invoice_url)]]
-    )
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t("buy_premium_stars_button", lang), url=invoice_url)]])
 
 
 def _build_yookassa_markup(lang, payment_url, payment_id):
@@ -138,28 +115,17 @@ async def _send_monthly_stars_invoice(bot, chat_id, user_id, lang):
 
 
 async def _send_monthly_yookassa_invoice(bot, chat_id, user_id, lang):
-    payment = await create_monthly_payment(user_id)
-    payment_id = payment["id"]
-    payment_url = payment.get("confirmation_url")
-    if not payment_url:
-        raise RuntimeError("YooKassa payment has no confirmation_url.")
-
-    await register_pending_payment(
-        PROVIDER_YOOKASSA,
-        payment_id,
-        user_id=user_id,
-        plan_type=PLAN_PREMIUM_MONTHLY,
-        amount_minor=payment.get("amount_minor"),
-        currency=payment.get("currency") or YOOKASSA_CURRENCY,
-        status=payment.get("status") or "pending",
-        metadata=payment.get("raw"),
-    )
+    session = await create_or_reuse_yookassa_payment(user_id)
+    payment_id = session.get("payment_id")
+    payment_url = session.get("payment_url")
+    if not payment_id or not payment_url:
+        raise RuntimeError("YooKassa payment session is incomplete.")
     log_event(
         "payment.yookassa.created",
         level="INFO",
         user_id=user_id,
         payment_id=payment_id,
-        status=payment.get("status"),
+        status=session.get("status"),
     )
     await bot.send_message(
         chat_id=chat_id,
@@ -167,7 +133,7 @@ async def _send_monthly_yookassa_invoice(bot, chat_id, user_id, lang):
             "premium_yookassa_desc",
             lang,
             amount=YOOKASSA_PREMIUM_MONTHLY_AMOUNT,
-            currency=(payment.get("currency") or YOOKASSA_CURRENCY),
+            currency=YOOKASSA_CURRENCY,
         ),
         reply_markup=_build_yookassa_markup(lang, payment_url, payment_id),
     )
@@ -214,7 +180,7 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(t("payment_invoice_failed_generic", lang))
 
 
-async def _process_yookassa_check(query, user_id, lang, payment_id):
+async def _process_yookassa_check(query, application, user_id, lang, payment_id):
     record = await get_payment(PROVIDER_YOOKASSA, payment_id)
     if not record:
         try:
@@ -228,12 +194,14 @@ async def _process_yookassa_check(query, user_id, lang, payment_id):
         except BadRequest:
             pass
         return
-
-    status_payload = await get_yookassa_payment(payment_id)
-    status = status_payload.get("status") or "unknown"
-    paid = bool(status_payload.get("paid"))
-    await update_payment_status(PROVIDER_YOOKASSA, payment_id, status, metadata=status_payload.get("raw"))
-    if status != "succeeded" or not paid:
+    result = await verify_and_finalize_yookassa_payment(
+        application,
+        payment_id,
+        expected_user_id=user_id,
+        trigger="manual_check",
+    )
+    if result.get("result") == "not_ready":
+        status = result.get("status")
         key = "payment_pending"
         if status == "canceled":
             key = "payment_cancelled"
@@ -244,36 +212,13 @@ async def _process_yookassa_check(query, user_id, lang, payment_id):
         except BadRequest:
             pass
         return
-    valid_payload, invalid_reason = _validate_yookassa_status_payload(status_payload, user_id)
-    if not valid_payload:
-        log_event(
-            "payment.invalid",
-            level="WARNING",
-            error_code=ERR_PAYMENT_INVALID,
-            user_id=user_id,
-            payment_id=payment_id,
-            provider=PROVIDER_YOOKASSA,
-            reason=invalid_reason,
-            amount_minor=status_payload.get("amount_minor"),
-            currency=status_payload.get("currency"),
-        )
+    if result.get("result") == "invalid":
         try:
             await query.answer(t("payment_invalid", lang), show_alert=True)
         except BadRequest:
             pass
         return
-
-    processed_now, _ = await complete_payment_once(
-        PROVIDER_YOOKASSA,
-        payment_id,
-        user_id=user_id,
-        plan_type=PLAN_PREMIUM_MONTHLY,
-        amount_minor=status_payload.get("amount_minor"),
-        currency=status_payload.get("currency") or YOOKASSA_CURRENCY,
-        status="succeeded",
-        metadata=status_payload.get("raw"),
-    )
-    if not processed_now:
+    if result.get("result") == "duplicate":
         log_event(
             "payment.duplicate_ignored",
             level="WARNING",
@@ -287,18 +232,10 @@ async def _process_yookassa_check(query, user_id, lang, payment_id):
         except BadRequest:
             pass
         return
-
-    profile = await activate_or_extend_monthly(user_id, charge_id=payment_id, source="yookassa")
-    if profile.get("plan_type") == PLAN_PREMIUM_LIFETIME:
-        await query.message.reply_text(t("premium_lifetime_already", lang))
-        return
-    await query.message.reply_text(
-        tf(
-            "subscription_active_until",
-            lang,
-            expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
-        )
-    )
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
 
 
 async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -326,12 +263,18 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if data == "sub:buy_monthly":
+            if not allow_payment_callback(user.id, "buy_monthly"):
+                return
             await _start_purchase_flow(context.bot, query.message.chat_id, user.id, lang)
             return
         if data == "sub:buy_stars":
+            if not allow_payment_callback(user.id, "buy_stars"):
+                return
             await _send_monthly_stars_invoice(context.bot, query.message.chat_id, user.id, lang)
             return
         if data == "sub:buy_yookassa":
+            if not allow_payment_callback(user.id, "buy_yookassa"):
+                return
             await _send_monthly_yookassa_invoice(context.bot, query.message.chat_id, user.id, lang)
             return
         if data.startswith("sub:check_yk:"):
@@ -342,7 +285,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 except BadRequest:
                     pass
                 return
-            await _process_yookassa_check(query, user.id, lang, payment_id)
+            await _process_yookassa_check(query, context.application, user.id, lang, payment_id)
             return
     except Exception as e:
         log_event(
@@ -396,7 +339,6 @@ async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             level="WARNING",
             error_code=ERR_PAYMENT_INVALID,
             user_id=user_id,
-            invoice_payload=getattr(query, "invoice_payload", None),
         )
         await query.answer(ok=False, error_message=t("payment_invalid", lang))
         return
@@ -435,18 +377,15 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         )
         await msg.reply_text(t("payment_invalid", lang))
         return
-    processed_now, _ = await complete_payment_once(
-        PROVIDER_TELEGRAM_STARS,
-        charge_id,
+    processed_now, _, _ = await finalize_stars_payment(
+        context.application,
         user_id=user.id,
-        plan_type=PLAN_PREMIUM_MONTHLY,
+        charge_id=charge_id,
         amount_minor=int(payment.total_amount),
         currency=payment.currency,
-        status="succeeded",
         metadata={
             "telegram_payment_charge_id": payment.telegram_payment_charge_id,
             "provider_payment_charge_id": payment.provider_payment_charge_id,
-            "invoice_payload": payment.invoice_payload,
         },
     )
     if not processed_now:
@@ -458,15 +397,3 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
             charge_id=charge_id,
             provider=PROVIDER_TELEGRAM_STARS,
         )
-        return
-    profile = await activate_or_extend_monthly(user.id, charge_id=charge_id, source=PROVIDER_TELEGRAM_STARS)
-    if profile.get("plan_type") == PLAN_PREMIUM_LIFETIME:
-        await msg.reply_text(t("premium_lifetime_already", lang))
-        return
-    await msg.reply_text(
-        tf(
-            "subscription_active_until",
-            lang,
-            expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
-        )
-    )

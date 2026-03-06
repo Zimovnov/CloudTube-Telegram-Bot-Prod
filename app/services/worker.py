@@ -10,7 +10,6 @@ from app.config import (
     DOWNLOAD_STALL_CHECK_INTERVAL_SECONDS,
     DOWNLOAD_STALL_TIMEOUT_SECONDS,
     EXTERNAL_UPLOAD_TIMEOUT_SECONDS,
-    YTDLP_COOKIES_FILE,
     YTDLP_FRAGMENT_RETRIES,
     YTDLP_JS_RUNTIMES_MAP,
     YTDLP_REMOTE_COMPONENTS,
@@ -36,6 +35,9 @@ from app.jobs import request_active_download_cancel, safe_filename
 from app.logging_utils import classify_exception_error_code, log_event, worker_error
 from app.settings_store import get_user_settings_sync
 from app.state import JOB_PROGRESS
+from app.ytdlp_cookies import prepare_ytdlp_cookiefile
+
+
 def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_id, loop, progress_q, cancel_event=None, cancel_reason_ref=None):
     def _cancel_reason():
         if isinstance(cancel_reason_ref, list) and cancel_reason_ref:
@@ -134,8 +136,9 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
             'continuedl': True,
             'progress_hooks': [_progress_hook],
         }
-        if platform == "youtube" and YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
-            ydl_opts['cookiefile'] = YTDLP_COOKIES_FILE
+        cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
+        if cookiefile:
+            ydl_opts['cookiefile'] = cookiefile
         if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
             ydl_opts['js_runtimes'] = dict(YTDLP_JS_RUNTIMES_MAP)
         if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:
