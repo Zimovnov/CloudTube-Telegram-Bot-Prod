@@ -45,30 +45,13 @@ def _premium_duration_days():
 
 
 def _build_premium_overview_text(lang):
-    has_stars, has_robokassa = _resolve_payment_methods()
-    if has_robokassa:
-        price_line = tf(
-            "premium_price_rub_line",
-            lang,
-            amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
-            currency=ROBOKASSA_CURRENCY,
-            days=_premium_duration_days(),
-        )
-    elif has_stars:
-        price_line = tf(
-            "premium_price_stars_line",
-            lang,
-            stars=PREMIUM_MONTHLY_STARS,
-            days=_premium_duration_days(),
-        )
-    else:
-        price_line = tf(
-            "premium_price_rub_line",
-            lang,
-            amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
-            currency=ROBOKASSA_CURRENCY,
-            days=_premium_duration_days(),
-        )
+    price_line = tf(
+        "premium_price_combo_line",
+        lang,
+        stars=PREMIUM_MONTHLY_STARS,
+        amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
+        days=_premium_duration_days(),
+    )
     return tf(
         "premium_overview_text",
         lang,

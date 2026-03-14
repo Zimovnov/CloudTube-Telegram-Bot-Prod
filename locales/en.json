@@ -106,6 +106,7 @@
   "premium_overview_text": "Premium subscription\n{price_line}\n\nBenefits:\n- unlimited media deliveries\n- send media up to {max_hours} hours long\n- metadata editing for true perfectionists\n\nPremium is activated automatically after payment.",
   "premium_price_rub_line": "Subscription price: {amount} RUB / {days} days",
   "premium_price_stars_line": "Price: {stars} Stars / {days} days",
+  "premium_price_combo_line": "Subscription price:\n- {stars} Stars\n- {amount} RUB\nfor {days} days",
   "premium_invoice_title": "Premium Monthly",
   "premium_invoice_desc": "Premium subscription for 30 days for {stars} Stars.",
   "premium_monthly_label": "Premium 30 days",

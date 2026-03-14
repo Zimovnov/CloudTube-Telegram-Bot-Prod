@@ -106,6 +106,7 @@
   "premium_overview_text": "Premium-подписка\n{price_line}\n\nЧто входит:\n- безлимитные выдачи медиафайлов\n- возможность отправить боту медиафайлы длительностью до {max_hours} часов\n- функция изменения метаданных для истинных перфекционистов\n\nПосле оплаты Premium активируется автоматически.",
   "premium_price_rub_line": "Цена подписки: {amount} рублей / {days} дней",
   "premium_price_stars_line": "Стоимость: {stars} Stars / {days} дней",
+  "premium_price_combo_line": "Стоимость подписки:\n- {stars} Stars\n- {amount} рублей\nна {days} дней",
   "premium_invoice_title": "Premium Monthly",
   "premium_invoice_desc": "Подписка Premium на 30 дней за {stars} Stars.",
   "premium_monthly_label": "Premium 30 дней",
