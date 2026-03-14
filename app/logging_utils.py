@@ -83,6 +83,19 @@ _ANSI_LEVEL_COLORS = {
     "ERROR": "\033[31m",
     "CRITICAL": "\033[35m",
 }
+_CONSOLE_IGNORED_KEYS = {"service", "env", "ts", "level", "logger"}
+_CONSOLE_PRIORITY_KEYS = (
+    "error_code",
+    "job_id",
+    "payment_id",
+    "update_id",
+    "user_id",
+    "platform",
+    "yt_type",
+    "status",
+    "error_class",
+    "reason",
+)
 
 
 def _log_level(level_name):
@@ -118,6 +131,90 @@ class ColoredJsonLogFormatter(JsonLogFormatter):
         return rendered.replace(target, replacement, 1)
 
 
+def _console_value(value, max_len=120):
+    if value is None:
+        return None
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            rendered = str(value)
+    else:
+        rendered = str(value)
+    rendered = rendered.replace("\r", "\\r").replace("\n", "\\n")
+    if len(rendered) > max_len:
+        return f"{rendered[:max_len]}..."
+    return rendered
+
+
+class ConsoleLogFormatter(logging.Formatter):
+    def __init__(self, use_color=False):
+        super().__init__()
+        self.use_color = bool(use_color)
+
+    def _level_text(self, level_name):
+        alias = {"WARNING": "WARN", "CRITICAL": "CRIT"}.get(level_name, level_name)
+        if not self.use_color:
+            return alias
+        color = _ANSI_LEVEL_COLORS.get(level_name)
+        if not color:
+            return alias
+        return f"{color}{alias}{_ANSI_RESET}"
+
+    def format(self, record):
+        raw_payload = record.msg if isinstance(record.msg, dict) else {"message": record.getMessage()}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {"message": str(raw_payload)}
+
+        payload = {}
+        for key, value in raw_payload.items():
+            sanitized = _sanitize_log_value(str(key), value)
+            if sanitized is not None:
+                payload[str(key)] = sanitized
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        level = self._level_text(record.levelname)
+
+        event = _console_value(payload.pop("event", None)) or _console_value(payload.get("message")) or record.name
+        message = _console_value(payload.pop("message", None))
+
+        for ignored in _CONSOLE_IGNORED_KEYS:
+            payload.pop(ignored, None)
+
+        line_parts = [ts, level, event]
+        if message and message != event:
+            line_parts.append(message)
+
+        ordered_keys = []
+        for key in _CONSOLE_PRIORITY_KEYS:
+            if key in payload:
+                ordered_keys.append(key)
+        for key in sorted(payload.keys()):
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+
+        max_fields = 8
+        shown = 0
+        for key in ordered_keys:
+            if shown >= max_fields:
+                break
+            rendered = _console_value(payload.get(key))
+            if rendered is None or rendered == "":
+                continue
+            line_parts.append(f"{key}={rendered}")
+            shown += 1
+
+        remaining = len(ordered_keys) - shown
+        if remaining > 0:
+            line_parts.append(f"+{remaining} fields")
+
+        if record.exc_info:
+            exc_type = getattr(record.exc_info[0], "__name__", "Exception")
+            line_parts.append(f"exc={exc_type}")
+
+        return " | ".join(line_parts)
+
+
 def _build_logger():
     app_logger = logging.getLogger("cloudtube_bot")
     app_logger.setLevel(_log_level(LOG_LEVEL))
@@ -125,13 +222,11 @@ def _build_logger():
     app_logger.handlers.clear()
 
     formatter = JsonLogFormatter()
-    color_formatter = ColoredJsonLogFormatter()
+    console_formatter = ConsoleLogFormatter(use_color=LOG_COLOR_STDOUT)
 
     if LOG_TO_STDOUT:
         stdout_handler = logging.StreamHandler(sys.stdout)
-        # Keep colors visible in Docker logs when LOG_COLOR_STDOUT=1.
-        use_color = bool(LOG_COLOR_STDOUT)
-        stdout_handler.setFormatter(color_formatter if use_color else formatter)
+        stdout_handler.setFormatter(console_formatter)
         app_logger.addHandler(stdout_handler)
 
     if LOG_TO_FILE:
@@ -152,7 +247,7 @@ def _build_logger():
 
     if not app_logger.handlers:
         fallback_handler = logging.StreamHandler(sys.stdout)
-        fallback_handler.setFormatter(formatter)
+        fallback_handler.setFormatter(ConsoleLogFormatter(use_color=False))
         app_logger.addHandler(fallback_handler)
         sys.stderr.write("[logging] no handlers configured, fallback to stdout\\n")
 

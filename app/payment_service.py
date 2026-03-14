@@ -7,8 +7,8 @@ from app.access import PLAN_PREMIUM_MONTHLY, format_utc_iso_for_display
 from app.config import (
     PAYMENT_BUTTON_THROTTLE_SECONDS,
     PAYMENT_SESSION_WINDOW_SECONDS,
-    YOOKASSA_CURRENCY,
-    YOOKASSA_PREMIUM_MONTHLY_AMOUNT,
+    ROBOKASSA_CURRENCY,
+    ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
 )
 from app.i18n import get_lang, t, tf
 from app.logging_utils import log_event
@@ -19,17 +19,15 @@ from app.payments_store import (
     finalize_verified_payment,
     get_payment,
     get_payment_session,
-    list_reconcilable_payments,
     mark_payment_invalid,
     payments_store_is_ready,
     register_pending_payment,
-    update_payment_status,
 )
-from app.yookassa import create_monthly_payment, extract_payment_metadata, get_payment as get_yookassa_payment
+from app.robokassa import create_monthly_payment, extract_payment_metadata
 
 
 PROVIDER_TELEGRAM_STARS = "telegram_stars"
-PROVIDER_YOOKASSA = "yookassa"
+PROVIDER_ROBOKASSA = "robokassa"
 
 _BUTTON_THROTTLE = {}
 _BUTTON_THROTTLE_LOCK = threading.Lock()
@@ -39,8 +37,8 @@ def payments_available():
     return payments_store_is_ready()
 
 
-def _expected_yookassa_amount_minor():
-    return int(YOOKASSA_PREMIUM_MONTHLY_AMOUNT) * 100
+def _expected_robokassa_amount_minor():
+    return int(ROBOKASSA_PREMIUM_MONTHLY_AMOUNT) * 100
 
 
 def allow_payment_callback(user_id, action):
@@ -58,19 +56,21 @@ def build_payment_session_key(user_id, plan_type):
     window = int(time.time() // int(PAYMENT_SESSION_WINDOW_SECONDS))
     raw = f"{int(user_id)}:{str(plan_type).strip().lower()}:{window}"
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return f"yk:{digest[:32]}"
+    return f"rk:{digest[:32]}"
 
 
-def validate_yookassa_verified_payload(status_payload, expected_user_id=None):
+def validate_robokassa_verified_payload(status_payload, expected_user_id=None):
     if not isinstance(status_payload, dict):
         return False, "invalid_payload", None, None
+    if not bool(status_payload.get("signature_valid")):
+        return False, "invalid_signature", None, None
     try:
         amount_minor = int(status_payload.get("amount_minor"))
     except Exception:
         return False, "invalid_amount", None, None
-    if amount_minor != _expected_yookassa_amount_minor():
+    if amount_minor != _expected_robokassa_amount_minor():
         return False, "unexpected_amount", None, None
-    if str(status_payload.get("currency") or "").upper() != str(YOOKASSA_CURRENCY).upper():
+    if str(status_payload.get("currency") or "").upper() != str(ROBOKASSA_CURRENCY).upper():
         return False, "invalid_currency", None, None
     metadata = extract_payment_metadata(status_payload)
     if not metadata["user_id"]:
@@ -112,11 +112,11 @@ async def notify_successful_entitlement(application, *, user_id, entitlement, pa
         )
 
 
-async def create_or_reuse_yookassa_payment(user_id):
+async def create_or_reuse_robokassa_payment(user_id):
     session_key = build_payment_session_key(user_id, PLAN_PREMIUM_MONTHLY)
     session = await acquire_payment_session(
         session_key,
-        provider=PROVIDER_YOOKASSA,
+        provider=PROVIDER_ROBOKASSA,
         user_id=user_id,
         plan_type=PLAN_PREMIUM_MONTHLY,
         ttl_seconds=PAYMENT_SESSION_WINDOW_SECONDS,
@@ -133,18 +133,18 @@ async def create_or_reuse_yookassa_payment(user_id):
     if action != "create":
         return session
     try:
-        payment = await create_monthly_payment(user_id, idempotence_key=session_key)
+        payment = await create_monthly_payment(user_id)
         payment_id = payment["id"]
-        payment_url = payment.get("confirmation_url")
+        payment_url = payment.get("payment_url")
         if not payment_url:
-            raise RuntimeError("YooKassa payment has no confirmation_url.")
+            raise RuntimeError("Robokassa payment session is incomplete.")
         await register_pending_payment(
-            PROVIDER_YOOKASSA,
+            PROVIDER_ROBOKASSA,
             payment_id,
             user_id=user_id,
             plan_type=PLAN_PREMIUM_MONTHLY,
             amount_minor=payment.get("amount_minor"),
-            currency=payment.get("currency") or YOOKASSA_CURRENCY,
+            currency=payment.get("currency") or ROBOKASSA_CURRENCY,
             status=payment.get("status") or "pending",
             metadata=payment.get("raw"),
         )
@@ -160,22 +160,19 @@ async def create_or_reuse_yookassa_payment(user_id):
         raise
 
 
-async def verify_and_finalize_yookassa_payment(application, payment_id, *, expected_user_id=None, trigger="manual"):
-    status_payload = await get_yookassa_payment(payment_id)
-    status = status_payload.get("status") or "unknown"
-    paid = bool(status_payload.get("paid"))
-    await update_payment_status(PROVIDER_YOOKASSA, payment_id, status, metadata=status_payload.get("raw"))
-    if status != "succeeded" or not paid:
-        return {"result": "not_ready", "status": status, "payload": status_payload}
-    valid_payload, invalid_reason, verified_user_id, verified_plan_type = validate_yookassa_verified_payload(
+async def verify_and_finalize_robokassa_payment(application, status_payload, *, expected_user_id=None, trigger="manual"):
+    payment_id = str(status_payload.get("id") or "").strip()
+    if not payment_id:
+        return {"result": "invalid", "reason": "missing_invoice_id", "status": "unknown", "payload": status_payload}
+    valid_payload, invalid_reason, verified_user_id, verified_plan_type = validate_robokassa_verified_payload(
         status_payload,
         expected_user_id=expected_user_id,
     )
     if not valid_payload:
-        existing = await get_payment(PROVIDER_YOOKASSA, payment_id)
+        existing = await get_payment(PROVIDER_ROBOKASSA, payment_id)
         if existing:
             await mark_payment_invalid(
-                PROVIDER_YOOKASSA,
+                PROVIDER_ROBOKASSA,
                 payment_id,
                 metadata=status_payload.get("raw"),
                 invalid_reason=invalid_reason,
@@ -185,32 +182,32 @@ async def verify_and_finalize_yookassa_payment(application, payment_id, *, expec
             level="WARNING",
             user_id=verified_user_id or expected_user_id,
             payment_id=payment_id,
-            provider=PROVIDER_YOOKASSA,
+            provider=PROVIDER_ROBOKASSA,
             reason=invalid_reason,
             amount_minor=status_payload.get("amount_minor"),
             currency=status_payload.get("currency"),
         )
-        return {"result": "invalid", "reason": invalid_reason, "status": status, "payload": status_payload}
+        return {"result": "invalid", "reason": invalid_reason, "status": "invalid", "payload": status_payload}
     try:
         processed_now, payment_record, entitlement = await finalize_verified_payment(
-            PROVIDER_YOOKASSA,
+            PROVIDER_ROBOKASSA,
             payment_id,
             user_id=verified_user_id,
             plan_type=verified_plan_type,
             amount_minor=status_payload.get("amount_minor"),
-            currency=status_payload.get("currency") or YOOKASSA_CURRENCY,
+            currency=status_payload.get("currency") or ROBOKASSA_CURRENCY,
             status="succeeded",
             metadata=status_payload.get("raw"),
         )
     except RuntimeError as e:
         if "payment_binding_mismatch" in str(e):
             await mark_payment_invalid(
-                PROVIDER_YOOKASSA,
+                PROVIDER_ROBOKASSA,
                 payment_id,
                 metadata=status_payload.get("raw"),
                 invalid_reason="payment_binding_mismatch",
             )
-            return {"result": "invalid", "reason": "payment_binding_mismatch", "status": status, "payload": status_payload}
+            return {"result": "invalid", "reason": "payment_binding_mismatch", "status": "invalid", "payload": status_payload}
         raise
     if processed_now:
         await notify_successful_entitlement(
@@ -222,7 +219,7 @@ async def verify_and_finalize_yookassa_payment(application, payment_id, *, expec
         )
     return {
         "result": "processed" if processed_now else "duplicate",
-        "status": status,
+        "status": "succeeded",
         "payment": payment_record,
         "entitlement": entitlement,
         "payload": status_payload,
@@ -249,17 +246,3 @@ async def finalize_stars_payment(application, *, user_id, charge_id, amount_mino
             source=PROVIDER_TELEGRAM_STARS,
         )
     return processed_now, payment_record, entitlement
-
-
-async def run_yookassa_reconciliation(application, *, limit):
-    processed = 0
-    for item in await list_reconcilable_payments(provider=PROVIDER_YOOKASSA, limit=limit):
-        result = await verify_and_finalize_yookassa_payment(
-            application,
-            item["payment_id"],
-            expected_user_id=item.get("user_id"),
-            trigger="reconcile",
-        )
-        if result.get("result") == "processed":
-            processed += 1
-    return processed

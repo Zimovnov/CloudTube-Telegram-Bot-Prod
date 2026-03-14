@@ -132,7 +132,7 @@ PREMIUM_MAX_DURATION_SECONDS = max(
     FREE_MAX_DURATION_SECONDS,
     _env_int("PREMIUM_MAX_DURATION_SECONDS", 10 * 60 * 60),
 )
-PREMIUM_MONTHLY_STARS = max(1, _env_int("PREMIUM_MONTHLY_STARS", 75))
+PREMIUM_MONTHLY_STARS = max(0, _env_int("PREMIUM_MONTHLY_STARS", 0))
 PREMIUM_PERIOD_SECONDS = max(60, _env_int("PREMIUM_PERIOD_SECONDS", 30 * 24 * 60 * 60))
 TELEGRAM_STARS_PROVIDER_TOKEN = (os.getenv("TELEGRAM_STARS_PROVIDER_TOKEN") or "").strip()
 PAYMENTS_DATABASE_URL = (os.getenv("PAYMENTS_DATABASE_URL") or "").strip()
@@ -146,19 +146,20 @@ PAYMENTS_ALLOW_INMEMORY_FALLBACK = _env_bool("PAYMENTS_ALLOW_INMEMORY_FALLBACK",
 PAYMENT_SESSION_WINDOW_SECONDS = max(30, _env_int("PAYMENT_SESSION_WINDOW_SECONDS", 300))
 PAYMENT_BUTTON_THROTTLE_SECONDS = max(1, _env_int("PAYMENT_BUTTON_THROTTLE_SECONDS", 2))
 
-YOOKASSA_SHOP_ID = (os.getenv("YOOKASSA_SHOP_ID") or "").strip()
-YOOKASSA_SECRET_KEY = (os.getenv("YOOKASSA_SECRET_KEY") or "").strip()
-YOOKASSA_RETURN_URL = (os.getenv("YOOKASSA_RETURN_URL") or "").strip()
-YOOKASSA_API_BASE = (os.getenv("YOOKASSA_API_BASE") or "https://api.yookassa.ru/v3").strip().rstrip("/")
-YOOKASSA_CURRENCY = (os.getenv("YOOKASSA_CURRENCY") or "RUB").strip().upper()
-YOOKASSA_PREMIUM_MONTHLY_AMOUNT = max(1, _env_int("YOOKASSA_PREMIUM_MONTHLY_AMOUNT", 299))
-YOOKASSA_WEBHOOK_ENABLED = _env_bool("YOOKASSA_WEBHOOK_ENABLED", default=False)
-YOOKASSA_WEBHOOK_BIND_HOST = (os.getenv("YOOKASSA_WEBHOOK_BIND_HOST") or "0.0.0.0").strip()
-YOOKASSA_WEBHOOK_BIND_PORT = max(1, _env_int("YOOKASSA_WEBHOOK_BIND_PORT", 8080))
-YOOKASSA_WEBHOOK_PATH = (os.getenv("YOOKASSA_WEBHOOK_PATH") or "/webhooks/yookassa").strip() or "/webhooks/yookassa"
-YOOKASSA_RECONCILE_ENABLED = _env_bool("YOOKASSA_RECONCILE_ENABLED", default=False)
-YOOKASSA_RECONCILE_INTERVAL_SEC = max(10, _env_int("YOOKASSA_RECONCILE_INTERVAL_SEC", 60))
-YOOKASSA_RECONCILE_BATCH_SIZE = max(1, _env_int("YOOKASSA_RECONCILE_BATCH_SIZE", 50))
+ROBOKASSA_MERCHANT_LOGIN = (os.getenv("ROBOKASSA_MERCHANT_LOGIN") or "").strip()
+ROBOKASSA_PASSWORD1 = (os.getenv("ROBOKASSA_PASSWORD1") or "").strip()
+ROBOKASSA_PASSWORD2 = (os.getenv("ROBOKASSA_PASSWORD2") or "").strip()
+ROBOKASSA_PAYMENT_URL = (
+    os.getenv("ROBOKASSA_PAYMENT_URL") or "https://auth.robokassa.ru/Merchant/Index.aspx"
+).strip()
+ROBOKASSA_HASH_ALGORITHM = (os.getenv("ROBOKASSA_HASH_ALGORITHM") or "MD5").strip().upper()
+ROBOKASSA_IS_TEST = _env_bool("ROBOKASSA_IS_TEST", default=False)
+ROBOKASSA_CURRENCY = (os.getenv("ROBOKASSA_CURRENCY") or "RUB").strip().upper()
+ROBOKASSA_PREMIUM_MONTHLY_AMOUNT = max(1, _env_int("ROBOKASSA_PREMIUM_MONTHLY_AMOUNT", 299))
+ROBOKASSA_WEBHOOK_ENABLED = _env_bool("ROBOKASSA_WEBHOOK_ENABLED", default=False)
+ROBOKASSA_WEBHOOK_BIND_HOST = (os.getenv("ROBOKASSA_WEBHOOK_BIND_HOST") or "0.0.0.0").strip()
+ROBOKASSA_WEBHOOK_BIND_PORT = max(1, _env_int("ROBOKASSA_WEBHOOK_BIND_PORT", 8080))
+ROBOKASSA_WEBHOOK_PATH = (os.getenv("ROBOKASSA_WEBHOOK_PATH") or "/webhooks/robokassa").strip() or "/webhooks/robokassa"
 
 RUNNING_JOB_TTL_SECONDS = max(60, _env_int("RUNNING_JOB_TTL_SECONDS", PREMIUM_MAX_DURATION_SECONDS + 3600))
 PAYMENT_DEDUP_TTL_SECONDS = max(3600, _env_int("PAYMENT_DEDUP_TTL_SECONDS", 400 * 24 * 60 * 60))
@@ -241,12 +242,18 @@ def validate_runtime_configuration():
             _validate_postgres_tls(errors)
         if REDIS_URL:
             _validate_redis_tls(errors)
-        if YOOKASSA_WEBHOOK_ENABLED:
-            if not YOOKASSA_WEBHOOK_BIND_HOST:
-                errors.append("YOOKASSA_WEBHOOK_BIND_HOST is required when webhook is enabled.")
-            if not YOOKASSA_WEBHOOK_PATH.startswith("/"):
-                errors.append("YOOKASSA_WEBHOOK_PATH must start with '/'.")
-            if YOOKASSA_WEBHOOK_BIND_PORT <= 0:
-                errors.append("YOOKASSA_WEBHOOK_BIND_PORT must be positive.")
+        if ROBOKASSA_WEBHOOK_ENABLED:
+            if not ROBOKASSA_MERCHANT_LOGIN:
+                errors.append("ROBOKASSA_MERCHANT_LOGIN is required when webhook is enabled.")
+            if not ROBOKASSA_PASSWORD1:
+                errors.append("ROBOKASSA_PASSWORD1 is required when webhook is enabled.")
+            if not ROBOKASSA_PASSWORD2:
+                errors.append("ROBOKASSA_PASSWORD2 is required when webhook is enabled.")
+            if not ROBOKASSA_WEBHOOK_BIND_HOST:
+                errors.append("ROBOKASSA_WEBHOOK_BIND_HOST is required when webhook is enabled.")
+            if not ROBOKASSA_WEBHOOK_PATH.startswith("/"):
+                errors.append("ROBOKASSA_WEBHOOK_PATH must start with '/'.")
+            if ROBOKASSA_WEBHOOK_BIND_PORT <= 0:
+                errors.append("ROBOKASSA_WEBHOOK_BIND_PORT must be positive.")
     if errors:
         raise RuntimeError("Invalid runtime configuration:\n- " + "\n- ".join(errors))

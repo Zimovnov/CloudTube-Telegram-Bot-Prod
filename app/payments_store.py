@@ -947,7 +947,7 @@ def get_payment_session_sync(session_key):
             return _fetch_payment_session_public(cur, session_key)
 
 
-def list_reconcilable_payments_sync(provider="yookassa", limit=50):
+def list_reconcilable_payments_sync(provider="robokassa", limit=50):
     _require_db()
     provider = _norm_provider(provider)
     limit = max(1, int(limit))
@@ -1248,7 +1248,7 @@ async def get_payment_session(session_key):
     return await loop.run_in_executor(None, fn)
 
 
-async def list_reconcilable_payments(provider="yookassa", limit=50):
+async def list_reconcilable_payments(provider="robokassa", limit=50):
     loop = asyncio.get_running_loop()
     fn = functools.partial(list_reconcilable_payments_sync, provider=provider, limit=limit)
     return await loop.run_in_executor(None, fn)

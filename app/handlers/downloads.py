@@ -50,7 +50,7 @@ from app.errors import (
     ERR_WORKER_UPLOAD_FAILED,
     ERR_WORKER_UPLOAD_HTTP,
 )
-from app.handlers.metadata import maybe_offer_metadata_edit
+from app.handlers.metadata import cancel_active_metadata_edit, maybe_offer_metadata_edit
 from app.handlers.payments import build_premium_markup
 from app.i18n import get_lang, t, tf
 from app.jobs import (
@@ -221,7 +221,7 @@ def schedule_download_background(
     async def _runner():
         register_active_download_task(user_id)
         try:
-            await download_content(
+            download_result = await download_content(
                 update,
                 context,
                 url,
@@ -233,6 +233,8 @@ def schedule_download_background(
                 plan_snapshot=plan_snapshot,
                 max_duration_seconds=max_duration_seconds,
             )
+            if bool((download_result or {}).get("metadata_prompt_offered")):
+                return
             try:
                 profile = await get_user_profile(user_id)
                 policy = await resolve_user_download_policy(profile)
@@ -468,8 +470,8 @@ async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # Спрашиваем, нужна ли обрезка
             keyboard = [
-                [InlineKeyboardButton(t("yes", lang), callback_data=f"trim_yes:{uid}"),
-                 InlineKeyboardButton(t("no", lang), callback_data=f"trim_no:{uid}")],
+                [InlineKeyboardButton(f"✅ {t('yes', lang)}", callback_data=f"trim_yes:{uid}"),
+                 InlineKeyboardButton(f"❌ {t('no', lang)}", callback_data=f"trim_no:{uid}")],
                 [InlineKeyboardButton(t("cancel", lang), callback_data=f"cancel:{uid}")]
             ]
             reply = await update.message.reply_text(t("ask_trim_track", lang), reply_markup=InlineKeyboardMarkup(keyboard))
@@ -510,8 +512,8 @@ async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 # Спрашиваем про обрезку
                 keyboard = [
-                    [InlineKeyboardButton(t("yes", lang), callback_data=f"trim_yes:{uid}"),
-                     InlineKeyboardButton(t("no", lang), callback_data=f"trim_no:{uid}")],
+                    [InlineKeyboardButton(f"✅ {t('yes', lang)}", callback_data=f"trim_yes:{uid}"),
+                     InlineKeyboardButton(f"❌ {t('no', lang)}", callback_data=f"trim_no:{uid}")],
                     [InlineKeyboardButton(t("cancel", lang), callback_data=f"cancel:{uid}")]
                 ]
                 reply = await update.message.reply_text(t("ask_trim_before_send", lang), reply_markup=InlineKeyboardMarkup(keyboard))
@@ -623,8 +625,8 @@ async def yt_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Показываем вопрос про обрезку
     try:
         await query.edit_message_text(t("ask_trim_before_send", lang), reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("yes", lang), callback_data=f"trim_yes:{owner_id}"),
-             InlineKeyboardButton(t("no", lang), callback_data=f"trim_no:{owner_id}")],
+            [InlineKeyboardButton(f"✅ {t('yes', lang)}", callback_data=f"trim_yes:{owner_id}"),
+             InlineKeyboardButton(f"❌ {t('no', lang)}", callback_data=f"trim_no:{owner_id}")],
             [InlineKeyboardButton(t("cancel", lang), callback_data=f"cancel:{owner_id}")]
         ]))
     except BadRequest:
@@ -747,8 +749,11 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    abort_user_job(context, user.id if user else None)
-    await update.message.reply_text(t("cancelled_send_link", lang))
+    user_id = user.id if user else None
+    job_cancelled = abort_user_job(context, user_id)
+    metadata_cancelled = await cancel_active_metadata_edit(user_id, reason="user_cancelled_command")
+    reply_key = "metadata_cancelled" if metadata_cancelled and not job_cancelled else "cancelled_send_link"
+    await update.message.reply_text(t(reply_key, lang))
     clear_conversation_state(context, user.id if user else None)
     return ASK_TRIM
 
@@ -789,16 +794,18 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    job_cancelled = abort_user_job(context, owner_id)
+    metadata_cancelled = await cancel_active_metadata_edit(owner_id, reason="user_cancelled_callback")
+    reply_key = "metadata_cancelled" if metadata_cancelled and not job_cancelled else "cancelled_send_link"
+
+    clear_conversation_state(context, owner_id)
     try:
-        await query.edit_message_text(t("cancelled_send_link", lang))
+        await query.edit_message_text(t(reply_key, lang))
     except BadRequest:
         try:
-            await query.message.reply_text(t("cancelled_send_link", lang))
+            await query.message.reply_text(t(reply_key, lang))
         except Exception:
             pass
-
-    abort_user_job(context, owner_id)
-    clear_conversation_state(context, owner_id)
     return ASK_TRIM
 
 # ===== Диапазон обрезки (общий обработчик) =====
@@ -901,6 +908,7 @@ async def download_content(
     plan_snapshot=PLAN_FREE,
     max_duration_seconds=MAX_DURATION,
 ):
+    result_flags = {"metadata_prompt_offered": False}
     msg = message or update.message
     effective_user = update.effective_user or (msg.from_user if msg else None)
     user_id = effective_user.id if effective_user else (msg.from_user.id if msg and msg.from_user else None)
@@ -937,7 +945,7 @@ async def download_content(
             await status_msg.delete()
         except Exception:
             pass
-        return
+        return result_flags
 
     cancel_event = threading.Event()
     cancel_reason_ref = [None]
@@ -1024,7 +1032,7 @@ async def download_content(
                     await status_msg.delete()
                 except Exception:
                     pass
-                return
+                return result_flags
 
             worker_future = loop.run_in_executor(
                 None,
@@ -1081,7 +1089,7 @@ async def download_content(
                     await status_msg.delete()
                 except Exception:
                     pass
-                return
+                return result_flags
 
             mode = result.get('mode')
             title = result.get('title', 'Media')
@@ -1188,7 +1196,7 @@ async def download_content(
             ):
                 try:
                     user_settings = await get_user_settings(user_id)
-                    await maybe_offer_metadata_edit(
+                    session = await maybe_offer_metadata_edit(
                         context=context,
                         message=msg,
                         user_id=user_id,
@@ -1200,6 +1208,7 @@ async def download_content(
                         artist=uploader,
                         source_job_id=job_id,
                     )
+                    result_flags["metadata_prompt_offered"] = bool(session)
                 except Exception as e:
                     log_event(
                         "metadata.offer.failed",
@@ -1271,7 +1280,7 @@ async def download_content(
 
     # tmpdir удаляется автоматически здесь
     # В context.user_data могут быть и другие данные; очистку/prompt удаляет вызывающий код
-    return
+    return result_flags
 
 # ===== Инициализация =====
 

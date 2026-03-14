@@ -4,29 +4,30 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.access import PLAN_PREMIUM_LIFETIME, PLAN_PREMIUM_MONTHLY, get_user_profile
+from app.access import PLAN_PREMIUM_LIFETIME, get_user_profile
 from app.config import (
+    FREE_MONTHLY_LIMIT,
+    PREMIUM_MAX_DURATION_SECONDS,
     PREMIUM_MONTHLY_STARS,
     PREMIUM_PERIOD_SECONDS,
+    ROBOKASSA_CURRENCY,
+    ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
     TELEGRAM_STARS_PROVIDER_TOKEN,
-    YOOKASSA_CURRENCY,
-    YOOKASSA_PREMIUM_MONTHLY_AMOUNT,
 )
 from app.errors import ERR_PAYMENT_DUPLICATE, ERR_PAYMENT_INVALID
 from app.i18n import get_lang, t, tf
 from app.logging_utils import log_event
 from app.payment_service import (
+    PROVIDER_ROBOKASSA,
     PROVIDER_TELEGRAM_STARS,
-    PROVIDER_YOOKASSA,
     allow_payment_callback,
-    create_or_reuse_yookassa_payment,
+    create_or_reuse_robokassa_payment,
     finalize_stars_payment,
     payments_available,
-    validate_yookassa_verified_payload,
-    verify_and_finalize_yookassa_payment,
+    validate_robokassa_verified_payload,
 )
 from app.payments_store import get_payment
-from app.yookassa import is_yookassa_configured
+from app.robokassa import is_robokassa_configured
 
 
 def _stars_enabled():
@@ -36,7 +37,45 @@ def _stars_enabled():
 def _resolve_payment_methods():
     if not payments_available():
         return False, False
-    return _stars_enabled(), is_yookassa_configured()
+    return _stars_enabled(), is_robokassa_configured()
+
+
+def _premium_duration_days():
+    return max(1, int(PREMIUM_PERIOD_SECONDS // (24 * 60 * 60)))
+
+
+def _build_premium_overview_text(lang):
+    has_stars, has_robokassa = _resolve_payment_methods()
+    if has_robokassa:
+        price_line = tf(
+            "premium_price_rub_line",
+            lang,
+            amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
+            currency=ROBOKASSA_CURRENCY,
+            days=_premium_duration_days(),
+        )
+    elif has_stars:
+        price_line = tf(
+            "premium_price_stars_line",
+            lang,
+            stars=PREMIUM_MONTHLY_STARS,
+            days=_premium_duration_days(),
+        )
+    else:
+        price_line = tf(
+            "premium_price_rub_line",
+            lang,
+            amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
+            currency=ROBOKASSA_CURRENCY,
+            days=_premium_duration_days(),
+        )
+    return tf(
+        "premium_overview_text",
+        lang,
+        price_line=price_line,
+        free_limit=FREE_MONTHLY_LIMIT,
+        max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
+    )
 
 
 def _is_valid_stars_invoice_payload(payload, user_id):
@@ -64,8 +103,8 @@ def _validate_stars_payment(payment, user_id):
     return True, None
 
 
-def _validate_yookassa_status_payload(status_payload, user_id):
-    valid, reason, _, _ = validate_yookassa_verified_payload(status_payload, expected_user_id=user_id)
+def _validate_robokassa_status_payload(status_payload, user_id):
+    valid, reason, _, _ = validate_robokassa_verified_payload(status_payload, expected_user_id=user_id)
     return valid, reason
 
 
@@ -73,12 +112,12 @@ def build_premium_markup(lang):
     return InlineKeyboardMarkup([[InlineKeyboardButton(t("buy_premium_button", lang), callback_data="sub:buy_monthly")]])
 
 
-def _build_payment_methods_markup(lang, has_stars, has_yookassa):
+def _build_payment_methods_markup(lang, has_stars, has_robokassa):
     rows = []
     if has_stars:
         rows.append([InlineKeyboardButton(t("buy_premium_stars_button", lang), callback_data="sub:buy_stars")])
-    if has_yookassa:
-        rows.append([InlineKeyboardButton(t("buy_premium_yookassa_button", lang), callback_data="sub:buy_yookassa")])
+    if has_robokassa:
+        rows.append([InlineKeyboardButton(t("buy_premium_robokassa_button", lang), callback_data="sub:buy_robokassa")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -86,11 +125,11 @@ def _build_stars_invoice_markup(lang, invoice_url):
     return InlineKeyboardMarkup([[InlineKeyboardButton(t("buy_premium_stars_button", lang), url=invoice_url)]])
 
 
-def _build_yookassa_markup(lang, payment_url, payment_id):
+def _build_robokassa_markup(lang, payment_url, payment_id):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(t("payment_pay_now_button", lang), url=payment_url)],
-            [InlineKeyboardButton(t("payment_check_button", lang), callback_data=f"sub:check_yk:{payment_id}")],
+            [InlineKeyboardButton(t("payment_check_button", lang), callback_data=f"sub:check_rk:{payment_id}")],
         ]
     )
 
@@ -114,14 +153,14 @@ async def _send_monthly_stars_invoice(bot, chat_id, user_id, lang):
     )
 
 
-async def _send_monthly_yookassa_invoice(bot, chat_id, user_id, lang):
-    session = await create_or_reuse_yookassa_payment(user_id)
+async def _send_monthly_robokassa_invoice(bot, chat_id, user_id, lang):
+    session = await create_or_reuse_robokassa_payment(user_id)
     payment_id = session.get("payment_id")
     payment_url = session.get("payment_url")
     if not payment_id or not payment_url:
-        raise RuntimeError("YooKassa payment session is incomplete.")
+        raise RuntimeError("Robokassa payment session is incomplete.")
     log_event(
-        "payment.yookassa.created",
+        "payment.robokassa.created",
         level="INFO",
         user_id=user_id,
         payment_id=payment_id,
@@ -130,29 +169,29 @@ async def _send_monthly_yookassa_invoice(bot, chat_id, user_id, lang):
     await bot.send_message(
         chat_id=chat_id,
         text=tf(
-            "premium_yookassa_desc",
+            "premium_robokassa_desc",
             lang,
-            amount=YOOKASSA_PREMIUM_MONTHLY_AMOUNT,
-            currency=YOOKASSA_CURRENCY,
+            amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
+            currency=ROBOKASSA_CURRENCY,
         ),
-        reply_markup=_build_yookassa_markup(lang, payment_url, payment_id),
+        reply_markup=_build_robokassa_markup(lang, payment_url, payment_id),
     )
 
 
 async def _start_purchase_flow(bot, chat_id, user_id, lang):
-    has_stars, has_yookassa = _resolve_payment_methods()
-    if has_stars and has_yookassa:
+    has_stars, has_robokassa = _resolve_payment_methods()
+    if has_stars and has_robokassa:
         await bot.send_message(
             chat_id=chat_id,
             text=t("premium_choose_method", lang),
-            reply_markup=_build_payment_methods_markup(lang, has_stars, has_yookassa),
+            reply_markup=_build_payment_methods_markup(lang, has_stars, has_robokassa),
         )
         return
     if has_stars:
         await _send_monthly_stars_invoice(bot, chat_id, user_id, lang)
         return
-    if has_yookassa:
-        await _send_monthly_yookassa_invoice(bot, chat_id, user_id, lang)
+    if has_robokassa:
+        await _send_monthly_robokassa_invoice(bot, chat_id, user_id, lang)
         return
     await bot.send_message(chat_id=chat_id, text=t("payment_method_unavailable", lang))
 
@@ -167,21 +206,16 @@ async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if profile.get("plan_type") == PLAN_PREMIUM_LIFETIME:
         await msg.reply_text(t("premium_lifetime_already", lang))
         return
-    try:
-        await _start_purchase_flow(context.bot, msg.chat_id, user.id, lang)
-    except Exception as e:
-        log_event(
-            "payment.invoice.failed",
-            level="ERROR",
-            user_id=user.id,
-            error_class=type(e).__name__,
-            error=str(e),
-        )
-        await msg.reply_text(t("payment_invoice_failed_generic", lang))
+    text = _build_premium_overview_text(lang)
+    has_stars, has_robokassa = _resolve_payment_methods()
+    if has_stars or has_robokassa:
+        await msg.reply_text(text, reply_markup=build_premium_markup(lang))
+        return
+    await msg.reply_text(f"{text}\n\n{t('payment_method_unavailable', lang)}")
 
 
-async def _process_yookassa_check(query, application, user_id, lang, payment_id):
-    record = await get_payment(PROVIDER_YOOKASSA, payment_id)
+async def _process_robokassa_check(query, user_id, lang, payment_id):
+    record = await get_payment(PROVIDER_ROBOKASSA, payment_id)
     if not record:
         try:
             await query.answer(t("payment_unknown", lang), show_alert=True)
@@ -194,46 +228,27 @@ async def _process_yookassa_check(query, application, user_id, lang, payment_id)
         except BadRequest:
             pass
         return
-    result = await verify_and_finalize_yookassa_payment(
-        application,
-        payment_id,
-        expected_user_id=user_id,
-        trigger="manual_check",
-    )
-    if result.get("result") == "not_ready":
-        status = result.get("status")
-        key = "payment_pending"
-        if status == "canceled":
-            key = "payment_cancelled"
-        elif status == "waiting_for_capture":
-            key = "payment_waiting_capture"
-        try:
-            await query.answer(t(key, lang), show_alert=True)
-        except BadRequest:
-            pass
-        return
-    if result.get("result") == "invalid":
-        try:
-            await query.answer(t("payment_invalid", lang), show_alert=True)
-        except BadRequest:
-            pass
-        return
-    if result.get("result") == "duplicate":
-        log_event(
-            "payment.duplicate_ignored",
-            level="WARNING",
-            error_code=ERR_PAYMENT_DUPLICATE,
-            user_id=user_id,
-            payment_id=payment_id,
-            provider=PROVIDER_YOOKASSA,
-        )
+    status = str(record.get("status") or "").strip().lower()
+    if bool(record.get("is_processed")) or status == "succeeded":
         try:
             await query.answer(t("payment_already_processed", lang), show_alert=True)
         except BadRequest:
             pass
         return
+    if status in ("invalid", "failed"):
+        try:
+            await query.answer(t("payment_invalid", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+    if status in ("cancelled", "canceled"):
+        try:
+            await query.answer(t("payment_cancelled", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
     try:
-        await query.answer()
+        await query.answer(t("payment_pending", lang), show_alert=True)
     except BadRequest:
         pass
 
@@ -252,7 +267,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     lang = await get_lang(user.id, user.language_code)
     data = query.data or ""
 
-    if data in ("sub:buy_monthly", "sub:buy_stars", "sub:buy_yookassa"):
+    if data in ("sub:buy_monthly", "sub:buy_stars", "sub:buy_robokassa"):
         profile = await get_user_profile(user.id)
         if profile.get("plan_type") == PLAN_PREMIUM_LIFETIME:
             try:
@@ -272,12 +287,12 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             await _send_monthly_stars_invoice(context.bot, query.message.chat_id, user.id, lang)
             return
-        if data == "sub:buy_yookassa":
-            if not allow_payment_callback(user.id, "buy_yookassa"):
+        if data == "sub:buy_robokassa":
+            if not allow_payment_callback(user.id, "buy_robokassa"):
                 return
-            await _send_monthly_yookassa_invoice(context.bot, query.message.chat_id, user.id, lang)
+            await _send_monthly_robokassa_invoice(context.bot, query.message.chat_id, user.id, lang)
             return
-        if data.startswith("sub:check_yk:"):
+        if data.startswith("sub:check_rk:"):
             payment_id = data.split(":", 2)[-1].strip()
             if not payment_id:
                 try:
@@ -285,7 +300,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 except BadRequest:
                     pass
                 return
-            await _process_yookassa_check(query, context.application, user.id, lang, payment_id)
+            await _process_robokassa_check(query, user.id, lang, payment_id)
             return
     except Exception as e:
         log_event(

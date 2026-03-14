@@ -14,6 +14,7 @@ from app.metadata_store import (
     close_session,
     create_session,
     expire_due_sessions,
+    get_active_session_id_sync,
     get_changed_summary,
     get_input_mode_sync,
     get_session,
@@ -82,6 +83,16 @@ async def maybe_offer_metadata_edit(
         reply_markup=_build_start_markup(lang, session["session_id"]),
     )
     return session
+
+
+async def cancel_active_metadata_edit(user_id, reason="user_cancelled"):
+    if user_id is None:
+        return False
+    clear_input_mode_sync(user_id)
+    session_id = get_active_session_id_sync(user_id)
+    if not session_id:
+        return False
+    return bool(await close_session(session_id, reason=reason))
 
 
 async def _render_edit_menu(query, lang, session):
