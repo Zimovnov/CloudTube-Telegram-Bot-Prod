@@ -30,6 +30,9 @@ from app.payments_store import get_payment
 from app.robokassa import is_robokassa_configured
 
 
+TEMP_ROBOKASSA_PLACEHOLDER_ENABLED = True  # TODO: remove after real Robokassa launch/review.
+
+
 def _stars_enabled():
     return int(PREMIUM_MONTHLY_STARS) > 0
 
@@ -38,6 +41,11 @@ def _resolve_payment_methods():
     if not payments_available():
         return False, False
     return _stars_enabled(), is_robokassa_configured()
+
+
+def _should_show_temp_robokassa_placeholder():
+    # Temporary demo button for the Premium UX/review flow before real Robokassa is enabled.
+    return TEMP_ROBOKASSA_PLACEHOLDER_ENABLED and _stars_enabled() and not is_robokassa_configured()
 
 
 def _premium_duration_days():
@@ -101,6 +109,10 @@ def _build_payment_methods_markup(lang, has_stars, has_robokassa):
         rows.append([InlineKeyboardButton(t("buy_premium_stars_button", lang), callback_data="sub:buy_stars")])
     if has_robokassa:
         rows.append([InlineKeyboardButton(t("buy_premium_robokassa_button", lang), callback_data="sub:buy_robokassa")])
+    elif _should_show_temp_robokassa_placeholder():
+        rows.append(
+            [InlineKeyboardButton(t("buy_premium_card_placeholder_button", lang), callback_data="sub:buy_robokassa_placeholder")]
+        )
     return InlineKeyboardMarkup(rows)
 
 
@@ -163,7 +175,7 @@ async def _send_monthly_robokassa_invoice(bot, chat_id, user_id, lang):
 
 async def _start_purchase_flow(bot, chat_id, user_id, lang):
     has_stars, has_robokassa = _resolve_payment_methods()
-    if has_stars and has_robokassa:
+    if (has_stars and has_robokassa) or _should_show_temp_robokassa_placeholder():
         await bot.send_message(
             chat_id=chat_id,
             text=t("premium_choose_method", lang),
@@ -250,7 +262,7 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     lang = await get_lang(user.id, user.language_code)
     data = query.data or ""
 
-    if data in ("sub:buy_monthly", "sub:buy_stars", "sub:buy_robokassa"):
+    if data in ("sub:buy_monthly", "sub:buy_stars", "sub:buy_robokassa", "sub:buy_robokassa_placeholder"):
         profile = await get_user_profile(user.id)
         if profile.get("plan_type") == PLAN_PREMIUM_LIFETIME:
             try:
@@ -274,6 +286,15 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
             if not allow_payment_callback(user.id, "buy_robokassa"):
                 return
             await _send_monthly_robokassa_invoice(context.bot, query.message.chat_id, user.id, lang)
+            return
+        if data == "sub:buy_robokassa_placeholder":
+            if not allow_payment_callback(user.id, "buy_robokassa_placeholder"):
+                return
+            try:
+                await query.answer(t("premium_card_placeholder_notice", lang), show_alert=True)
+            except BadRequest:
+                pass
+            await query.message.reply_text(t("premium_card_placeholder_notice", lang))
             return
         if data.startswith("sub:check_rk:"):
             payment_id = data.split(":", 2)[-1].strip()
