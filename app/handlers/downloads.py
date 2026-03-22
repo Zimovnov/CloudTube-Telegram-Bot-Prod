@@ -77,7 +77,13 @@ from app.settings_store import (
     log_user_event_if_enabled,
 )
 from app.usage import increment_usage_success_once
-from app.services.worker import _progress_consumer, _progress_watcher, _stall_watchdog, _sync_worker
+from app.services.worker import (
+    _progress_consumer,
+    _progress_watcher,
+    _stall_watchdog,
+    _sync_worker,
+    upload_file_to_external_hosting_sync,
+)
 from app.state import (
     BACKGROUND_JOB_TASKS,
     BACKGROUND_JOB_TASKS_LOCK as _BACKGROUND_JOB_TASKS_LOCK,
@@ -1102,11 +1108,31 @@ async def download_content(
             if mode == 'file':
                 file_path = result.get('file_path')
                 try:
-                    with open(file_path, 'rb') as f:
-                        if result.get('ext') == 'mp3':
-                            await msg.reply_audio(f, caption=caption, title=title, performer=uploader)
-                        else:
-                            await msg.reply_video(f, caption=caption)
+                    max_send_attempts = 2
+                    for attempt in range(1, max_send_attempts + 1):
+                        try:
+                            with open(file_path, 'rb') as f:
+                                if result.get('ext') == 'mp3':
+                                    await msg.reply_audio(f, caption=caption, title=title, performer=uploader)
+                                else:
+                                    await msg.reply_video(f, caption=caption)
+                            break
+                        except TimedOut:
+                            if attempt >= max_send_attempts:
+                                raise
+                            if user_logs_enabled:
+                                log_event(
+                                    "telegram.file_send_retry",
+                                    level="WARNING",
+                                    error_code=ERR_TELEGRAM_TIMEOUT,
+                                    job_id=job_id,
+                                    user_id=user_id,
+                                    platform=platform,
+                                    yt_type=yt_type,
+                                    title=title,
+                                    attempt=attempt,
+                                )
+                            await asyncio.sleep(2)
                     delivery_success = True
                     delivered_file_path = file_path
                     if user_logs_enabled:
@@ -1145,7 +1171,57 @@ async def download_content(
                             yt_type=yt_type,
                             error_class=type(e).__name__,
                         )
-                    await msg.reply_text(t("file_send_fail", lang))
+                    fallback_link = None
+                    if send_error_code == ERR_TELEGRAM_TIMEOUT and file_path and os.path.exists(file_path):
+                        try:
+                            fallback_link = await loop.run_in_executor(
+                                None,
+                                upload_file_to_external_hosting_sync,
+                                file_path,
+                                title,
+                                result.get('ext'),
+                            )
+                        except Exception as upload_exc:
+                            fallback_error_code = classify_exception_error_code(upload_exc)
+                            if user_logs_enabled:
+                                log_event(
+                                    "telegram.file_send_fallback_failed",
+                                    level="ERROR",
+                                    error_code=fallback_error_code,
+                                    job_id=job_id,
+                                    user_id=user_id,
+                                    platform=platform,
+                                    yt_type=yt_type,
+                                    title=title,
+                                    error_class=type(upload_exc).__name__,
+                                    error=str(upload_exc),
+                                )
+                            else:
+                                log_event(
+                                    "telegram.file_send_fallback_failed",
+                                    level="ERROR",
+                                    error_code=fallback_error_code,
+                                    job_id=job_id,
+                                    platform=platform,
+                                    yt_type=yt_type,
+                                    error_class=type(upload_exc).__name__,
+                                )
+                    if fallback_link:
+                        await msg.reply_text(tf("file_send_fallback_link", lang, link=fallback_link))
+                        delivery_success = True
+                        if user_logs_enabled:
+                            log_event(
+                                "job.completed.link_fallback",
+                                level="INFO",
+                                job_id=job_id,
+                                user_id=user_id,
+                                platform=platform,
+                                yt_type=yt_type,
+                                title=title,
+                                link=fallback_link,
+                            )
+                    else:
+                        await msg.reply_text(t("file_send_fail", lang))
             elif mode == 'link':
                 link = result.get('link')
                 await msg.reply_text(tf("file_too_big", lang, link=link))

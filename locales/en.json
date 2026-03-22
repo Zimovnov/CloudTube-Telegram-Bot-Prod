@@ -49,6 +49,7 @@
   "ffmpeg_not_found": "FFmpeg not found.",
   "too_long": "Content is too long ({hours} h). Maximum {max_hours} h.",
   "file_too_big": "The file is too large for Telegram. Download link:\n{link}",
+  "file_send_fallback_link": "Telegram did not accept the file in time. Here is a download link:\n{link}",
   "file_send_fail": "Couldn't send file to chat. Try again later.",
   "generic_error": "Something went wrong. Please try again.",
   "progress_label": "Progress",

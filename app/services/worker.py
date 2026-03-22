@@ -38,6 +38,163 @@ from app.state import JOB_PROGRESS
 from app.ytdlp_cookies import prepare_ytdlp_cookiefile
 
 
+def upload_file_to_external_hosting_sync(file_path, title, ext, on_progress=None, raise_if_cancelled=None):
+    def _raise_if_cancelled_local():
+        if raise_if_cancelled is not None:
+            raise_if_cancelled()
+
+    def _send_progress_local(payload):
+        if on_progress is None:
+            return
+        try:
+            _raise_if_cancelled_local()
+            on_progress(payload)
+        except WorkerCancelledError:
+            raise
+        except Exception:
+            pass
+
+    def _sleep_backoff(attempt):
+        wait_seconds = min(5, attempt)
+        deadline = time.time() + wait_seconds
+        while True:
+            _raise_if_cancelled_local()
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.25, remaining))
+
+    gofile_servers = [
+        "https://store1.gofile.io/uploadFile",
+        "https://store2.gofile.io/uploadFile",
+        "https://store3.gofile.io/uploadFile",
+    ]
+    last_error = None
+
+    for server in gofile_servers:
+        _raise_if_cancelled_local()
+        for attempt in range(1, 4):
+            _raise_if_cancelled_local()
+            try:
+                _send_progress_local(
+                    {
+                        "phase": "uploading",
+                        "percent": 90,
+                        "status": "uploading",
+                        "server": server,
+                        "attempt": attempt,
+                    }
+                )
+
+                with open(file_path, "rb") as f:
+                    safe_title = safe_filename(title)
+                    files = {"file": (f"{safe_title}.{ext}", f)}
+                    response = requests.post(server, files=files, timeout=EXTERNAL_UPLOAD_TIMEOUT_SECONDS)
+
+                _raise_if_cancelled_local()
+                if response.status_code == 429:
+                    last_error = f"rate limited ({response.status_code})"
+                    _sleep_backoff(attempt)
+                    continue
+                if response.status_code >= 500:
+                    if "not enough server space" in (response.text or "").lower():
+                        last_error = "not enough server space"
+                        break
+                    last_error = f"server error ({response.status_code})"
+                    _sleep_backoff(attempt)
+                    break
+                if response.status_code < 200 or response.status_code >= 300:
+                    last_error = f"http {response.status_code}"
+                    _sleep_backoff(attempt)
+                    continue
+
+                try:
+                    data = response.json()
+                except Exception:
+                    last_error = f"non-json response ({response.status_code})"
+                    _sleep_backoff(attempt)
+                    continue
+
+                if data.get("status") == "ok":
+                    link = (data.get("data") or {}).get("downloadPage")
+                    if link:
+                        _send_progress_local(
+                            {
+                                "phase": "uploaded",
+                                "percent": 100,
+                                "status": "uploaded",
+                                "server": server,
+                            }
+                        )
+                        return link
+                    last_error = f"bad response: {data}"
+                    _sleep_backoff(attempt)
+                    continue
+
+                if "not enough server space" in (response.text or "").lower():
+                    last_error = "not enough server space"
+                    break
+                last_error = str(data)
+                _sleep_backoff(attempt)
+            except WorkerCancelledError:
+                raise
+            except Exception as e:
+                last_error = str(e)
+                _sleep_backoff(attempt)
+
+        if last_error == "not enough server space":
+            continue
+
+    try:
+        _raise_if_cancelled_local()
+        _send_progress_local(
+            {
+                "phase": "uploading",
+                "percent": 90,
+                "status": "uploading:file.io",
+                "server": "file.io",
+            }
+        )
+
+        with open(file_path, "rb") as f:
+            safe_title = safe_filename(title)
+            files = {"file": (f"{safe_title}.{ext}", f)}
+            response = requests.post("https://file.io", files=files, timeout=EXTERNAL_UPLOAD_TIMEOUT_SECONDS)
+
+        _raise_if_cancelled_local()
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(
+                f"file.io returned HTTP {response.status_code}. Last gofile error: {last_error}"
+            )
+
+        try:
+            data = response.json()
+        except Exception as e:
+            raise RuntimeError(
+                f"file.io returned a non-JSON response. Last gofile error: {last_error}"
+            ) from e
+
+        link = data.get("link") or data.get("url")
+        success = data.get("success")
+        if (success is True or link) and link:
+            _send_progress_local(
+                {
+                    "phase": "uploaded",
+                    "percent": 100,
+                    "status": "uploaded",
+                    "server": "file.io",
+                }
+            )
+            return link
+
+        err_msg = data.get("error") or data.get("message") or str(data)
+        raise RuntimeError(f"gofile/file.io upload failed: {err_msg}. Last gofile error: {last_error}")
+    except WorkerCancelledError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"gofile/file.io upload failed: {e}. Last gofile error: {last_error}")
+
+
 def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_id, loop, progress_q, cancel_event=None, cancel_reason_ref=None):
     def _cancel_reason():
         if isinstance(cancel_reason_ref, list) and cancel_reason_ref:
@@ -271,126 +428,21 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
         if size_mb <= 50:
             return {'status': 'ok', 'mode': 'file', 'file_path': file_path, 'ext': ext, 'title': title, 'uploader': uploader}
         else:
-            GOFILE_SERVERS = [
-                "https://store1.gofile.io/uploadFile",
-                "https://store2.gofile.io/uploadFile",
-                "https://store3.gofile.io/uploadFile",
-            ]
-            last_error = None
-            for server in GOFILE_SERVERS:
-                _raise_if_cancelled()
-                for attempt in range(1, 4):
-                    _raise_if_cancelled()
-                    try:
-                        _send_progress({
-                            'phase': 'uploading',
-                            'percent': 90,
-                            'status': 'uploading',
-                            'server': server,
-                            'attempt': attempt
-                        })
-            
-                        with open(file_path, 'rb') as f:
-                            safe_title = safe_filename(title)
-                            files = {'file': (f"{safe_title}.{ext}", f)}
-                            r = requests.post(server, files=files, timeout=EXTERNAL_UPLOAD_TIMEOUT_SECONDS)
-                        _raise_if_cancelled()
-                        if r.status_code == 429:
-                            last_error = f"rate limited ({r.status_code})"
-                            _sleep_backoff(attempt)
-                            continue
-                        if r.status_code >= 500:
-                            if "not enough server space" in (r.text or "").lower():
-                                last_error = "not enough server space"
-                                break
-                            last_error = f"server error ({r.status_code})"
-                            _sleep_backoff(attempt)
-                            break
-                        if r.status_code < 200 or r.status_code >= 300:
-                            last_error = f"http {r.status_code}"
-                            _sleep_backoff(attempt)
-                            continue
-                        try:
-                            data = r.json()
-                        except Exception:
-                            last_error = f"non-json response ({r.status_code})"
-                            _sleep_backoff(attempt)
-                            continue
-                        if data.get("status") == "ok":
-                            link = (data.get("data") or {}).get("downloadPage")
-                            if link:
-                                _send_progress({
-                                    'phase': 'uploaded',
-                                    'percent': 100,
-                                    'status': 'uploaded',
-                                    'server': server
-                                })
-                                return {'status': 'ok', 'mode': 'link', 'link': link, 'title': title, 'uploader': uploader}
-                            last_error = f"bad response: {data}"
-                            _sleep_backoff(attempt)
-                            continue
-                        else:
-                            if "not enough server space" in (r.text or "").lower():
-                                last_error = "not enough server space"
-                                break
-                            last_error = str(data)
-                            _sleep_backoff(attempt)
-                    except WorkerCancelledError:
-                        raise
-                    except Exception as e:
-                        last_error = str(e)
-                        _sleep_backoff(attempt)
-                if last_error == "not enough server space":
-                    continue
-
-            
-            # Резервный вариант: file.io
             try:
-                _raise_if_cancelled()
-                _send_progress({
-                    'phase': 'uploading',
-                    'percent': 90,
-                    'status': 'uploading:file.io',
-                    'server': 'file.io'
-                })
-                with open(file_path, 'rb') as f:
-                    safe_title = safe_filename(title)
-                    files = {'file': (f"{safe_title}.{ext}", f)}
-                    r = requests.post("https://file.io", files=files, timeout=EXTERNAL_UPLOAD_TIMEOUT_SECONDS)
-                _raise_if_cancelled()
-                if r.status_code < 200 or r.status_code >= 300:
-                    return worker_error(
-                        ERR_WORKER_UPLOAD_HTTP,
-                        f"Не удалось загрузить на gofile, fallback file.io вернул HTTP {r.status_code}. Последняя ошибка gofile: {last_error}",
-                    )
-                try:
-                    data = r.json()
-                except Exception:
-                    return worker_error(
-                        ERR_WORKER_UPLOAD_BAD_RESPONSE,
-                        f"Не удалось загрузить на gofile, fallback file.io вернул неожиданный ответ. Последняя ошибка gofile: {last_error}",
-                    )
-                link = data.get("link") or data.get("url")
-                success = data.get("success")
-                if (success is True or link) and link:
-                    _send_progress({
-                        'phase': 'uploaded',
-                        'percent': 100,
-                        'status': 'uploaded',
-                        'server': 'file.io'
-                    })
-                    return {'status': 'ok', 'mode': 'link', 'link': link, 'title': title, 'uploader': uploader}
-                err_msg = data.get("error") or data.get("message") or str(data)
-                return worker_error(
-                    ERR_WORKER_UPLOAD_FAILED,
-                    f"Не удалось загрузить на gofile и file.io: {err_msg}. Последняя ошибка gofile: {last_error}",
+                link = upload_file_to_external_hosting_sync(
+                    file_path,
+                    title,
+                    ext,
+                    on_progress=_send_progress,
+                    raise_if_cancelled=_raise_if_cancelled,
                 )
+                return {'status': 'ok', 'mode': 'link', 'link': link, 'title': title, 'uploader': uploader}
             except WorkerCancelledError:
                 raise
             except Exception as e:
                 return worker_error(
                     ERR_WORKER_UPLOAD_FAILED,
-                    f"Не удалось загрузить на gofile и file.io: {e}. Последняя ошибка gofile: {last_error}",
+                    str(e),
                 )
     except WorkerCancelledError as e:
         if e.reason == "stall_watchdog":
