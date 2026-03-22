@@ -37,6 +37,9 @@ from app.config import (
 from app.errors import ERR_FFMPEG_MISSING, ERR_SECURITY_WEAK_HASH_SALT
 from app.handlers.admin import (
     admin_grant_month,
+    admin_broadcast,
+    admin_broadcast_callback,
+    admin_broadcast_capture,
     admin_help,
     admin_operation_callback,
     admin_profile,
@@ -201,6 +204,7 @@ def main():
 
     app.add_handler(TypeHandler(Update, update_dedup_guard), group=-10)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, metadata_text_input_handler), group=-1)
+    app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.PHOTO, admin_broadcast_capture), group=-2)
     app.add_handler(conv)
 
     app.add_handler(CommandHandler("help", help_cmd))
@@ -208,6 +212,7 @@ def main():
     app.add_handler(CommandHandler("settings", settings_menu))
     app.add_handler(CommandHandler("premium", premium_command))
     app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("admin_broadcast", admin_broadcast))
     app.add_handler(CommandHandler("admin_profile", admin_profile))
     app.add_handler(CommandHandler("admin_setplan", admin_set_plan))
     app.add_handler(CommandHandler("admin_setrole", admin_set_role))
@@ -221,6 +226,7 @@ def main():
     app.add_handler(CallbackQueryHandler(yt_choice_callback, pattern="^yt_"))
     app.add_handler(CallbackQueryHandler(subscription_callback, pattern="^sub:"))
     app.add_handler(CallbackQueryHandler(admin_operation_callback, pattern="^adminop:"))
+    app.add_handler(CallbackQueryHandler(admin_broadcast_callback, pattern="^adminbc:"))
     app.add_handler(CallbackQueryHandler(metadata_callback, pattern="^meta:"))
 
     app.add_handler(PreCheckoutQueryHandler(precheckout_handler))

@@ -56,6 +56,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n\nAdmin:\n"
             "/admin\n"
             "/admin_profile [user_id]\n"
+            "/admin_broadcast\n"
             "/admin_setplan <user_id> <free|premium_monthly|premium_lifetime> [reason]\n"
             "/admin_setrole <user_id> <user|admin|superadmin> [reason]\n"
             "/admin_resetlimit <user_id> [YYYYMM] [reason]\n"

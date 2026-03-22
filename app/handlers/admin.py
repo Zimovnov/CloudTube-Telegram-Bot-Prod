@@ -2,9 +2,10 @@ import asyncio
 
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
-from telegram.ext import ContextTypes
+from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from app.access import (
+    PERM_ADMIN_ACCESS,
     PERM_PLAN_MANAGE,
     PERM_ROLE_MANAGE,
     PLAN_FREE,
@@ -18,6 +19,7 @@ from app.access import (
     consume_admin_nonce,
     format_utc_iso_for_display,
     get_user_profile,
+    list_known_user_ids,
     rbac_check,
 )
 from app.errors import (
@@ -33,6 +35,8 @@ from app.usage import normalize_usage_month_label
 
 _VALID_PLANS = {PLAN_FREE, PLAN_PREMIUM_MONTHLY, PLAN_PREMIUM_LIFETIME}
 _VALID_ROLES = {ROLE_USER, ROLE_ADMIN, ROLE_SUPERADMIN}
+_ADMIN_BROADCAST_PENDING_KEY = "admin_broadcast_pending"
+_ADMIN_BROADCAST_DRAFT_KEY = "admin_broadcast_draft"
 
 
 def _is_private_chat(update):
@@ -63,6 +67,85 @@ def _parse_target_and_reason(args):
     return target_user_id, reason
 
 
+def _clear_admin_broadcast_state(context):
+    context.user_data.pop(_ADMIN_BROADCAST_PENDING_KEY, None)
+    context.user_data.pop(_ADMIN_BROADCAST_DRAFT_KEY, None)
+
+
+def _track_admin_background_task(task, actor_user_id=None):
+    def _done(done_task):
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log_event(
+                "admin.broadcast.done_error",
+                level="WARNING",
+                user_id=actor_user_id,
+                error_class=type(e).__name__,
+                error=str(e),
+            )
+            return
+        if exc:
+            log_event(
+                "admin.broadcast.unhandled_exception",
+                level="ERROR",
+                user_id=actor_user_id,
+                error_class=type(exc).__name__,
+                error=str(exc),
+            )
+
+    task.add_done_callback(_done)
+
+
+async def _run_admin_broadcast(application, actor_user_id, draft):
+    recipients = await list_known_user_ids()
+    recipients = [uid for uid in recipients if int(uid) != int(actor_user_id)]
+    log_event(
+        "admin.broadcast.started",
+        level="INFO",
+        user_id=actor_user_id,
+        recipient_count=len(recipients),
+        message_kind=draft.get("kind"),
+    )
+
+    sent = 0
+    blocked = 0
+    failed = 0
+    bot = application.bot
+
+    for target_user_id in recipients:
+        try:
+            await bot.copy_message(
+                chat_id=target_user_id,
+                from_chat_id=draft["chat_id"],
+                message_id=draft["message_id"],
+            )
+            sent += 1
+        except Exception as e:
+            text = str(e).lower()
+            if "bot was blocked" in text or "forbidden" in text or "chat not found" in text:
+                blocked += 1
+            else:
+                failed += 1
+            await asyncio.sleep(0.05)
+            continue
+
+        await asyncio.sleep(0.05)
+
+    log_event(
+        "admin.broadcast.completed",
+        level="INFO",
+        user_id=actor_user_id,
+        recipient_count=len(recipients),
+        sent=sent,
+        blocked=blocked,
+        failed=failed,
+        message_kind=draft.get("kind"),
+    )
+
+
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
@@ -73,6 +156,69 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(t("rbac_denied", lang))
         return
     await update.effective_message.reply_text(t("admin_help", lang))
+
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.broadcast"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+
+    _clear_admin_broadcast_state(context)
+    context.user_data[_ADMIN_BROADCAST_PENDING_KEY] = True
+    await update.effective_message.reply_text(t("admin_broadcast_prompt", lang))
+
+
+async def admin_broadcast_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get(_ADMIN_BROADCAST_PENDING_KEY):
+        return
+
+    user = update.effective_user
+    message = update.effective_message
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not user or not message:
+        return
+    if not _is_private_chat(update):
+        raise ApplicationHandlerStop
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.broadcast.capture"):
+        _clear_admin_broadcast_state(context)
+        await message.reply_text(t("rbac_denied", lang))
+        raise ApplicationHandlerStop
+
+    draft = None
+    if message.photo:
+        draft = {
+            "kind": "photo",
+            "chat_id": message.chat_id,
+            "message_id": message.message_id,
+        }
+    elif (message.text or "").strip():
+        draft = {
+            "kind": "text",
+            "chat_id": message.chat_id,
+            "message_id": message.message_id,
+        }
+
+    if not draft:
+        await message.reply_text(t("admin_broadcast_unsupported", lang))
+        raise ApplicationHandlerStop
+
+    context.user_data[_ADMIN_BROADCAST_PENDING_KEY] = False
+    context.user_data[_ADMIN_BROADCAST_DRAFT_KEY] = draft
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminbc:confirm:{user.id}"),
+                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminbc:cancel:{user.id}"),
+            ]
+        ]
+    )
+    await message.reply_text(t("admin_broadcast_preview", lang), reply_markup=keyboard)
+    raise ApplicationHandlerStop
 
 
 async def admin_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -492,3 +638,83 @@ async def admin_operation_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(text)
     except Exception:
         await query.message.reply_text(text)
+
+
+async def admin_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query: CallbackQuery = update.callback_query
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
+
+    user = query.from_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        try:
+            await query.answer(t("admin_private_only", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.broadcast.confirm"):
+        try:
+            await query.edit_message_text(t("rbac_denied", lang))
+        except Exception:
+            await query.message.reply_text(t("rbac_denied", lang))
+        return
+
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        try:
+            await query.answer(t("admin_nonce_invalid", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+
+    _, action, owner_id_raw = parts
+    try:
+        owner_id = int(owner_id_raw)
+    except Exception:
+        try:
+            await query.answer(t("admin_nonce_invalid", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+
+    if owner_id != user.id:
+        try:
+            await query.answer(t("admin_nonce_not_for_you", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+
+    draft = context.user_data.get(_ADMIN_BROADCAST_DRAFT_KEY)
+    if not draft:
+        _clear_admin_broadcast_state(context)
+        try:
+            await query.edit_message_text(t("admin_broadcast_expired", lang))
+        except Exception:
+            await query.message.reply_text(t("admin_broadcast_expired", lang))
+        return
+
+    if action == "cancel":
+        _clear_admin_broadcast_state(context)
+        try:
+            await query.edit_message_text(t("admin_broadcast_cancelled", lang))
+        except Exception:
+            await query.message.reply_text(t("admin_broadcast_cancelled", lang))
+        return
+
+    if action != "confirm":
+        try:
+            await query.answer(t("admin_nonce_invalid", lang), show_alert=True)
+        except BadRequest:
+            pass
+        return
+
+    _clear_admin_broadcast_state(context)
+    task = asyncio.create_task(_run_admin_broadcast(context.application, user.id, draft))
+    _track_admin_background_task(task, actor_user_id=user.id)
+    try:
+        await query.edit_message_text(t("admin_broadcast_started", lang))
+    except Exception:
+        await query.message.reply_text(t("admin_broadcast_started", lang))

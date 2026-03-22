@@ -152,7 +152,7 @@
   "metadata_no_changes": "Нет изменений для применения.",
   "rbac_denied": "Недостаточно прав для этой операции.",
   "admin_private_only": "Критичные операции доступны только в приватном чате с ботом.",
-  "admin_help": "Админ-команды:\n/admin_profile [user_id]\n/admin_setplan user_id free|premium_monthly|premium_lifetime [reason]\n/admin_setrole user_id user|admin|superadmin [reason]\n/admin_resetlimit user_id [YYYYMM] [reason]\n/admin_resetpremium user_id [reason]\n/admin_grantmonth user_id [reason]",
+  "admin_help": "Админ-команды:\n/admin_profile [user_id]\n/admin_broadcast\n/admin_setplan user_id free|premium_monthly|premium_lifetime [reason]\n/admin_setrole user_id user|admin|superadmin [reason]\n/admin_resetlimit user_id [YYYYMM] [reason]\n/admin_resetpremium user_id [reason]\n/admin_grantmonth user_id [reason]",
   "admin_set_plan_usage": "Использование: /admin_setplan user_id free|premium_monthly|premium_lifetime [reason]",
   "admin_set_role_usage": "Использование: /admin_setrole user_id user|admin|superadmin [reason]",
   "admin_reset_limit_usage": "Использование: /admin_resetlimit user_id [YYYYMM] [reason]",
@@ -175,5 +175,11 @@
   "admin_set_plan_done": "План обновлен.\nuser_id: {target_user_id}\nplan: {plan_type}\nexpires_at_utc: {plan_expires_at_utc}",
   "admin_set_role_done": "Роль обновлена.\nuser_id: {target_user_id}\nrole: {role}",
   "admin_reset_limit_done": "Free-лимит сброшен.\nuser_id: {target_user_id}\nмесяц: {month_label}\nбыло: {previous_count}",
+  "admin_broadcast_prompt": "Пришлите одно сообщение для рассылки: текст, фото или фото с подписью. Для отмены используйте /cancel.",
+  "admin_broadcast_preview": "Принял. Это и будет рассылка. Подтвердить отправку всем пользователям?",
+  "admin_broadcast_started": "Рассылка запущена.",
+  "admin_broadcast_cancelled": "Рассылка отменена.",
+  "admin_broadcast_expired": "Черновик рассылки не найден. Начните заново через /admin_broadcast.",
+  "admin_broadcast_unsupported": "Поддерживаются только текст и фото. Пришлите текст, фото или фото с подписью.",
   "admin_profile_text": "Профиль:\nuser_id: {user_id}\nplan: {plan_type}\nexpires_at_utc: {plan_expires_at_utc}\nrole: {role}"
 }

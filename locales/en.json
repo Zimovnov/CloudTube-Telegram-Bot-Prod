@@ -152,7 +152,7 @@
   "metadata_no_changes": "No changes to apply.",
   "rbac_denied": "Insufficient permissions for this operation.",
   "admin_private_only": "Critical operations are allowed only in a private chat with the bot.",
-  "admin_help": "Admin commands:\n/admin_profile [user_id]\n/admin_setplan user_id free|premium_monthly|premium_lifetime [reason]\n/admin_setrole user_id user|admin|superadmin [reason]\n/admin_resetlimit user_id [YYYYMM] [reason]\n/admin_resetpremium user_id [reason]\n/admin_grantmonth user_id [reason]",
+  "admin_help": "Admin commands:\n/admin_profile [user_id]\n/admin_broadcast\n/admin_setplan user_id free|premium_monthly|premium_lifetime [reason]\n/admin_setrole user_id user|admin|superadmin [reason]\n/admin_resetlimit user_id [YYYYMM] [reason]\n/admin_resetpremium user_id [reason]\n/admin_grantmonth user_id [reason]",
   "admin_set_plan_usage": "Usage: /admin_setplan user_id free|premium_monthly|premium_lifetime [reason]",
   "admin_set_role_usage": "Usage: /admin_setrole user_id user|admin|superadmin [reason]",
   "admin_reset_limit_usage": "Usage: /admin_resetlimit user_id [YYYYMM] [reason]",
@@ -175,5 +175,11 @@
   "admin_set_plan_done": "Plan updated.\nuser_id: {target_user_id}\nplan: {plan_type}\nexpires_at_utc: {plan_expires_at_utc}",
   "admin_set_role_done": "Role updated.\nuser_id: {target_user_id}\nrole: {role}",
   "admin_reset_limit_done": "Free usage reset.\nuser_id: {target_user_id}\nmonth: {month_label}\nprevious_count: {previous_count}",
+  "admin_broadcast_prompt": "Send one message for the broadcast: text, photo, or photo with caption. Use /cancel to abort.",
+  "admin_broadcast_preview": "Received. This exact message will be broadcast. Confirm sending to all users?",
+  "admin_broadcast_started": "Broadcast started.",
+  "admin_broadcast_cancelled": "Broadcast cancelled.",
+  "admin_broadcast_expired": "Broadcast draft not found. Start again with /admin_broadcast.",
+  "admin_broadcast_unsupported": "Only text and photos are supported. Send text, a photo, or a photo with caption.",
   "admin_profile_text": "Profile:\nuser_id: {user_id}\nplan: {plan_type}\nexpires_at_utc: {plan_expires_at_utc}\nrole: {role}"
 }

@@ -347,6 +347,34 @@ async def get_user_profile(user_id):
     return await loop.run_in_executor(None, get_user_profile_sync, user_id)
 
 
+def list_known_user_ids_sync():
+    user_ids = set()
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            pattern = _redis_profile_key("*")
+            for key in client.scan_iter(match=pattern):
+                parts = str(key).split(":")
+                if len(parts) < 2 or parts[-1] != "profile":
+                    continue
+                try:
+                    user_ids.add(int(parts[-2]))
+                except Exception:
+                    continue
+        except Exception as e:
+            _log_redis_issue(f"Redis user profile scan failed: {type(e).__name__}: {e}")
+
+    with state.USER_PROFILE_LOCK:
+        user_ids.update(int(uid) for uid in state.LOCAL_USER_PROFILES.keys())
+
+    return sorted(user_ids)
+
+
+async def list_known_user_ids():
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, list_known_user_ids_sync)
+
+
 def _write_normalized_profile_sync(profile):
     client = _get_redis_client()
     uid = int(profile["user_id"])

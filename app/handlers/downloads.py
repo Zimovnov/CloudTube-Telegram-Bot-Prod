@@ -748,6 +748,11 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = await get_lang(user.id, getattr(user, "language_code", None)) if user else "ru"
 
+    if context.user_data.pop("admin_broadcast_pending", None) or context.user_data.pop("admin_broadcast_draft", None):
+        await update.message.reply_text(t("admin_broadcast_cancelled", lang))
+        clear_conversation_state(context, user.id if user else None)
+        return ASK_TRIM
+
     pid = context.user_data.pop("trim_prompt_msg_id", None)
     if pid:
         try:
