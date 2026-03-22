@@ -95,7 +95,7 @@
   "buy_premium_button": "Buy Premium",
   "buy_premium_stars_button": "Pay with Stars",
   "buy_premium_robokassa_button": "Pay via Robokassa",
-  "buy_premium_card_placeholder_button": "Pay by card • 199 RUB (temporary)",
+  "buy_premium_card_placeholder_button": "Pay by card • {amount} RUB (temporary)",
   "premium_choose_method": "Choose Premium payment method:",
   "payment_method_unavailable": "Payment method is currently unavailable. Contact support.",
   "free_limit_reached": "Free limit reached: {count}/{limit} successful deliveries in the current month. Upgrade to Premium.",

@@ -95,7 +95,7 @@
   "buy_premium_button": "Купить Premium",
   "buy_premium_stars_button": "Оплатить Stars",
   "buy_premium_robokassa_button": "Оплатить через Robokassa",
-  "buy_premium_card_placeholder_button": "Оплатить картой • 199 ₽ (временно)",
+  "buy_premium_card_placeholder_button": "Оплатить картой • {amount} ₽ (временно)",
   "premium_choose_method": "Выбери способ оплаты Premium:",
   "payment_method_unavailable": "Способ оплаты сейчас недоступен. Напишите в поддержку.",
   "free_limit_reached": "Лимит Free достигнут: {count}/{limit} успешных выдач в текущем месяце. Оформи Premium.",

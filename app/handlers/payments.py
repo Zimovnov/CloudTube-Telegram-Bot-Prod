@@ -111,7 +111,16 @@ def _build_payment_methods_markup(lang, has_stars, has_robokassa):
         rows.append([InlineKeyboardButton(t("buy_premium_robokassa_button", lang), callback_data="sub:buy_robokassa")])
     elif _should_show_temp_robokassa_placeholder():
         rows.append(
-            [InlineKeyboardButton(t("buy_premium_card_placeholder_button", lang), callback_data="sub:buy_robokassa_placeholder")]
+            [
+                InlineKeyboardButton(
+                    tf(
+                        "buy_premium_card_placeholder_button",
+                        lang,
+                        amount=ROBOKASSA_PREMIUM_MONTHLY_AMOUNT,
+                    ),
+                    callback_data="sub:buy_robokassa_placeholder",
+                )
+            ]
         )
     return InlineKeyboardMarkup(rows)
 
