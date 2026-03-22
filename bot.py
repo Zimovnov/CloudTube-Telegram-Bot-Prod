@@ -22,6 +22,15 @@ from app.config import (
     FFMPEG_REQUIRED_ON_STARTUP,
     LOG_HASH_SALT_STRICT,
     LOG_USER_HASH_SALT,
+    TELEGRAM_CONNECT_TIMEOUT,
+    TELEGRAM_GET_UPDATES_CONNECT_TIMEOUT,
+    TELEGRAM_GET_UPDATES_POOL_TIMEOUT,
+    TELEGRAM_GET_UPDATES_READ_TIMEOUT,
+    TELEGRAM_GET_UPDATES_WRITE_TIMEOUT,
+    TELEGRAM_MEDIA_WRITE_TIMEOUT,
+    TELEGRAM_POOL_TIMEOUT,
+    TELEGRAM_READ_TIMEOUT,
+    TELEGRAM_WRITE_TIMEOUT,
     TOKEN,
     validate_runtime_configuration,
 )
@@ -148,6 +157,15 @@ def main():
     app = (
         ApplicationBuilder()
         .token(TOKEN)
+        .connect_timeout(TELEGRAM_CONNECT_TIMEOUT)
+        .read_timeout(TELEGRAM_READ_TIMEOUT)
+        .write_timeout(TELEGRAM_WRITE_TIMEOUT)
+        .pool_timeout(TELEGRAM_POOL_TIMEOUT)
+        .media_write_timeout(TELEGRAM_MEDIA_WRITE_TIMEOUT)
+        .get_updates_connect_timeout(TELEGRAM_GET_UPDATES_CONNECT_TIMEOUT)
+        .get_updates_read_timeout(TELEGRAM_GET_UPDATES_READ_TIMEOUT)
+        .get_updates_write_timeout(TELEGRAM_GET_UPDATES_WRITE_TIMEOUT)
+        .get_updates_pool_timeout(TELEGRAM_GET_UPDATES_POOL_TIMEOUT)
         .post_init(_post_init)
         .post_shutdown(_post_shutdown)
         .build()
