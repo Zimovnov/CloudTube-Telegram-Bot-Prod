@@ -95,11 +95,6 @@ async def _settings_action_faq(query, lang):
 async def _settings_action_contacts(query, lang):
     await _safe_edit(query, t("contacts_text", lang))
 
-
-async def _settings_action_version(query, lang):
-    await _safe_edit(query, t("version_text", lang))
-
-
 async def _settings_action_close(query, lang):
     try:
         await query.edit_message_text(t("menu_closed", lang))
@@ -309,7 +304,6 @@ async def _show_support(query, lang):
     kb = [
         [InlineKeyboardButton(t("support_faq_btn", lang), callback_data="settings:faq")],
         [InlineKeyboardButton(t("support_contacts_btn", lang), callback_data="settings:contacts")],
-        [InlineKeyboardButton(t("support_version_btn", lang), callback_data="settings:version")],
         [InlineKeyboardButton(t("back", lang), callback_data="settings:back")],
     ]
     await _safe_edit(query, t("support_text", lang), reply_markup=InlineKeyboardMarkup(kb))
@@ -353,7 +347,6 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "settings:reset_confirm": lambda: _settings_action_reset_confirm(query, user_id, lang),
         "settings:faq": lambda: _settings_action_faq(query, lang),
         "settings:contacts": lambda: _settings_action_contacts(query, lang),
-        "settings:version": lambda: _settings_action_version(query, lang),
         "settings:close": lambda: _settings_action_close(query, lang),
         "settings:back": lambda: _settings_action_back(query, user_id),
         "settings:toggle_metadata_prompt": lambda: _toggle_metadata_prompt(query, s, user_id, lang),
