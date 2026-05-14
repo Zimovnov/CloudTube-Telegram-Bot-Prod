@@ -304,9 +304,6 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
             ydl_opts['source_address'] = '0.0.0.0'
         if platform == "youtube" and YTDLP_HTTP_CHUNK_SIZE > 0:
             ydl_opts['http_chunk_size'] = YTDLP_HTTP_CHUNK_SIZE
-        cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
-        if cookiefile:
-            ydl_opts['cookiefile'] = cookiefile
         if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
             ydl_opts['js_runtimes'] = dict(YTDLP_JS_RUNTIMES_MAP)
         if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:
@@ -331,8 +328,24 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
                 'preferedformat': 'mp4',
             }]
 
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
+        attempts = [ydl_opts]
+        if cookiefile:
+            ydl_opts_with_cookies = dict(ydl_opts)
+            ydl_opts_with_cookies['cookiefile'] = cookiefile
+            attempts.append(ydl_opts_with_cookies)
+
+        last_exc = None
+        for opts in attempts:
+            try:
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                break
+            except Exception as exc:
+                last_exc = exc
+                _raise_if_cancelled()
+        else:
+            raise last_exc
         _raise_if_cancelled()
 
         media_id = info.get('id') or 'media'

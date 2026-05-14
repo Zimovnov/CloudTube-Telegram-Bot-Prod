@@ -1017,16 +1017,26 @@ async def download_content(
                     if platform == "youtube" and YTDLP_HTTP_CHUNK_SIZE > 0:
                         ydl_opts_meta["http_chunk_size"] = YTDLP_HTTP_CHUNK_SIZE
                     cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
-                    if cookiefile:
-                        ydl_opts_meta["cookiefile"] = cookiefile
                     if platform == "youtube" and YTDLP_JS_RUNTIMES_MAP:
                         ydl_opts_meta["js_runtimes"] = dict(YTDLP_JS_RUNTIMES_MAP)
                     if platform == "youtube" and YTDLP_REMOTE_COMPONENTS:
                         ydl_opts_meta["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
-                    with YoutubeDL(ydl_opts_meta) as ydl:
-                        if cancel_event.is_set():
-                            return {}
-                        return ydl.extract_info(url, download=False) or {}
+                    attempts = [ydl_opts_meta]
+                    if cookiefile:
+                        ydl_opts_meta_with_cookies = dict(ydl_opts_meta)
+                        ydl_opts_meta_with_cookies["cookiefile"] = cookiefile
+                        attempts.append(ydl_opts_meta_with_cookies)
+                    last_exc = None
+                    for opts in attempts:
+                        try:
+                            with YoutubeDL(opts) as ydl:
+                                if cancel_event.is_set():
+                                    return {}
+                                return ydl.extract_info(url, download=False) or {}
+                        except Exception as exc:
+                            last_exc = exc
+                    if last_exc is not None:
+                        raise last_exc
                 except Exception:
                     return {}
 
