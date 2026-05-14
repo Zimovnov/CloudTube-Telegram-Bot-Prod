@@ -259,27 +259,32 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
             # Видео: предпочитаем mp4/m4a, иначе fallback и конвертация в mp4
             if quality_pref == "720":
                 ydl_format = (
+                    'best[height<=720][ext=mp4]/'
+                    'best[height<=720]/'
+                    'best[ext=mp4]/'
+                    'best/'
                     'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[height<=720]+bestaudio/'
-                    'best[height<=720]/'
                     'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
-                    'bestvideo+bestaudio/'
-                    'best'
+                    'bestvideo+bestaudio'
                 )
             elif quality_pref == "480":
                 ydl_format = (
+                    'best[height<=480][ext=mp4]/'
+                    'best[height<=480]/'
+                    'best[ext=mp4]/'
+                    'best/'
                     'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/'
                     'bestvideo[height<=480]+bestaudio/'
-                    'best[height<=480]/'
                     'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
-                    'bestvideo+bestaudio/'
-                    'best'
+                    'bestvideo+bestaudio'
                 )
             else:
                 ydl_format = (
+                    'best[ext=mp4]/'
+                    'best/'
                     'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
-                    'bestvideo+bestaudio/'
-                    'best'
+                    'bestvideo+bestaudio'
                 )
 
         ydl_opts = {
