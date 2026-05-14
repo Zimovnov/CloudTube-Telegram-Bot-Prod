@@ -55,6 +55,6 @@ tzlocal==5.3.1
 urllib3==2.5.0
 wcwidth==0.2.14
 yarl==1.22.0
-yt-dlp==2026.2.4
+yt-dlp==2026.3.17
 redis==5.2.1
 psycopg2-binary==2.9.10
