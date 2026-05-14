@@ -11,6 +11,8 @@ from app.config import (
     DOWNLOAD_STALL_TIMEOUT_SECONDS,
     EXTERNAL_UPLOAD_TIMEOUT_SECONDS,
     YTDLP_FRAGMENT_RETRIES,
+    YTDLP_FORCE_IPV4,
+    YTDLP_HTTP_CHUNK_SIZE,
     YTDLP_JS_RUNTIMES_MAP,
     YTDLP_REMOTE_COMPONENTS,
     YTDLP_RETRIES,
@@ -293,6 +295,10 @@ def _sync_worker(url, tmpdir, platform, yt_type, start, end, ffmpeg_path, user_i
             'continuedl': True,
             'progress_hooks': [_progress_hook],
         }
+        if platform == "youtube" and YTDLP_FORCE_IPV4:
+            ydl_opts['source_address'] = '0.0.0.0'
+        if platform == "youtube" and YTDLP_HTTP_CHUNK_SIZE > 0:
+            ydl_opts['http_chunk_size'] = YTDLP_HTTP_CHUNK_SIZE
         cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
         if cookiefile:
             ydl_opts['cookiefile'] = cookiefile

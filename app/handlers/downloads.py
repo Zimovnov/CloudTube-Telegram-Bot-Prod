@@ -18,6 +18,8 @@ from app.config import (
     ASK_TRIM_YT,
     ASK_TYPE,
     MAX_DURATION,
+    YTDLP_FORCE_IPV4,
+    YTDLP_HTTP_CHUNK_SIZE,
     YTDLP_JS_RUNTIMES_MAP,
     YTDLP_META_SOCKET_TIMEOUT,
     YTDLP_REMOTE_COMPONENTS,
@@ -1010,6 +1012,10 @@ async def download_content(
                         'no_warnings': True,
                         'socket_timeout': YTDLP_META_SOCKET_TIMEOUT,
                     }
+                    if platform == "youtube" and YTDLP_FORCE_IPV4:
+                        ydl_opts_meta["source_address"] = "0.0.0.0"
+                    if platform == "youtube" and YTDLP_HTTP_CHUNK_SIZE > 0:
+                        ydl_opts_meta["http_chunk_size"] = YTDLP_HTTP_CHUNK_SIZE
                     cookiefile = prepare_ytdlp_cookiefile(tmpdir) if platform == "youtube" else None
                     if cookiefile:
                         ydl_opts_meta["cookiefile"] = cookiefile
