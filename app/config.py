@@ -213,7 +213,7 @@ ASK_TRIM, ASK_RANGE, ASK_TYPE, ASK_TRIM_YT, ASK_RANGE_YT = range(5)
 
 def _is_local_host(hostname):
     host = str(hostname or "").strip().lower()
-    return host in ("", "localhost", "127.0.0.1", "::1")
+    return host in ("", "localhost", "127.0.0.1", "::1", "redis", "soundcloud_redis")
 
 
 def _parse_url_or_none(raw):

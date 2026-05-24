@@ -48,6 +48,23 @@ class RuntimeSecurityTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"APP_ENV": "dev", "BOT_TOKEN": "test-token"}, clear=False):
             self._reload_config()
 
+    def test_prod_allows_local_compose_redis_url(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BOT_TOKEN": "test-token",
+                "APP_ENV": "prod",
+                "REDIS_REQUIRED": "1",
+                "REDIS_URL": "redis://:secret@redis:6379/0",
+            },
+            clear=False,
+        ):
+            cfg = self._reload_config()
+            cfg.validate_runtime_configuration()
+
+        with mock.patch.dict(os.environ, {"APP_ENV": "dev", "BOT_TOKEN": "test-token"}, clear=False):
+            self._reload_config()
+
     def test_log_sanitizer_drops_pii_and_secrets(self):
         self.assertIsNone(logging_utils._sanitize_log_value("invoice_payload", "legacy-payload"))
         self.assertIsNone(logging_utils._sanitize_log_value("raw_payload", {"a": 1}))
