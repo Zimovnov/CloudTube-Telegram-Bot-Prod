@@ -17,7 +17,6 @@ from app.config import (
 from app.errors import ERR_LAST_SUPERADMIN, ERR_RBAC_DENIED
 from app.jobs import RedisError, _get_redis_client, _log_redis_issue, _redis_key
 from app.logging_utils import log_event
-from app.payments_store import get_effective_entitlement_sync, payments_store_is_ready, set_plan_entitlement_sync
 from app.usage import reset_free_usage_sync
 
 PLAN_FREE = "free"
@@ -97,6 +96,10 @@ def is_premium_plan(plan_type):
     return plan_type in (PLAN_PREMIUM_MONTHLY, PLAN_PREMIUM_LIFETIME)
 
 
+def payments_store_is_ready():
+    return False
+
+
 def _redis_profile_key(user_id):
     return _redis_key("user", user_id, "profile")
 
@@ -159,13 +162,7 @@ def _deepcopy(data):
 
 
 def _merge_entitlement(profile):
-    if not payments_store_is_ready():
-        return profile
-    effective = get_effective_entitlement_sync(profile["user_id"])
-    merged = dict(profile)
-    merged["plan_type"] = effective.get("plan_type", PLAN_FREE)
-    merged["plan_expires_at_utc"] = effective.get("plan_expires_at_utc")
-    return merged
+    return profile
 
 
 def _read_profile_redis(client, user_id):

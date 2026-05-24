@@ -4,20 +4,25 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
+from app.ads_store import (
+    build_ad_markup,
+    build_ad_message,
+    create_ad,
+    delete_ad,
+    get_ad,
+    list_ads,
+    record_ad_impression,
+    set_ad_enabled,
+)
 from app.access import (
     PERM_ADMIN_ACCESS,
-    PERM_PLAN_MANAGE,
     PERM_ROLE_MANAGE,
-    PLAN_FREE,
-    PLAN_PREMIUM_LIFETIME,
-    PLAN_PREMIUM_MONTHLY,
     ROLE_ADMIN,
     ROLE_SUPERADMIN,
     ROLE_USER,
     apply_admin_payload_sync,
     create_admin_nonce,
     consume_admin_nonce,
-    format_utc_iso_for_display,
     get_user_profile,
     list_known_user_ids,
     rbac_check,
@@ -31,9 +36,7 @@ from app.errors import (
 )
 from app.i18n import get_lang, t, tf
 from app.logging_utils import log_event
-from app.usage import normalize_usage_month_label
 
-_VALID_PLANS = {PLAN_FREE, PLAN_PREMIUM_MONTHLY, PLAN_PREMIUM_LIFETIME}
 _VALID_ROLES = {ROLE_USER, ROLE_ADMIN, ROLE_SUPERADMIN}
 _ADMIN_BROADCAST_PENDING_KEY = "admin_broadcast_pending"
 _ADMIN_BROADCAST_DRAFT_KEY = "admin_broadcast_draft"
@@ -54,17 +57,6 @@ def _parse_target_and_value(args):
     value = str(args[1]).strip().lower()
     reason = " ".join(args[2:]).strip()
     return target_user_id, value, reason
-
-
-def _parse_target_and_reason(args):
-    if len(args or []) < 1:
-        return None, None
-    try:
-        target_user_id = int(args[0])
-    except Exception:
-        return None, None
-    reason = " ".join(args[1:]).strip()
-    return target_user_id, reason
 
 
 def _clear_admin_broadcast_state(context):
@@ -146,16 +138,227 @@ async def _run_admin_broadcast(application, actor_user_id, draft):
     )
 
 
+async def _run_admin_ad_broadcast(application, actor_user_id, ad):
+    recipients = await list_known_user_ids()
+    log_event(
+        "ads.broadcast.started",
+        level="INFO",
+        user_id=actor_user_id,
+        ad_id=ad.get("ad_id"),
+        recipient_count=len(recipients),
+    )
+
+    sent = 0
+    blocked = 0
+    failed = 0
+    bot = application.bot
+    text = build_ad_message(ad)
+    markup = build_ad_markup(ad)
+
+    for target_user_id in recipients:
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+            await record_ad_impression(ad["ad_id"])
+            sent += 1
+        except Exception as e:
+            err_text = str(e).lower()
+            if "bot was blocked" in err_text or "forbidden" in err_text or "chat not found" in err_text:
+                blocked += 1
+            else:
+                failed += 1
+            await asyncio.sleep(0.05)
+            continue
+
+        await asyncio.sleep(0.05)
+
+    log_event(
+        "ads.broadcast.completed",
+        level="INFO",
+        user_id=actor_user_id,
+        ad_id=ad.get("ad_id"),
+        recipient_count=len(recipients),
+        sent=sent,
+        blocked=blocked,
+        failed=failed,
+    )
+
+
 async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
     if not _is_private_chat(update):
         await update.effective_message.reply_text(t("admin_private_only", lang))
         return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.help"):
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.help"):
         await update.effective_message.reply_text(t("rbac_denied", lang))
         return
     await update.effective_message.reply_text(t("admin_help", lang))
+
+
+def _parse_ad_payload(args):
+    raw = " ".join(args or []).strip()
+    parts = [part.strip() for part in raw.split("|", 4)]
+    if len(parts) != 5 or any(not part for part in parts):
+        return None
+    button_text, url, advertiser, erid, text = parts
+    return {
+        "button_text": button_text,
+        "url": url,
+        "advertiser": advertiser,
+        "erid": erid,
+        "text": text,
+    }
+
+
+async def admin_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.ads"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+    rows = await list_ads()
+    if not rows:
+        await update.effective_message.reply_text(t("admin_ads_empty", lang))
+        return
+    lines = [t("admin_ads_header", lang)]
+    for item in rows:
+        status = t("enabled", lang) if item.get("enabled") else t("disabled", lang)
+        lines.append(
+            tf(
+                "admin_ads_row",
+                lang,
+                ad_id=item.get("ad_id"),
+                status=status,
+                impressions=int(item.get("impressions") or 0),
+                advertiser=item.get("advertiser") or "-",
+                button_text=item.get("button_text") or "-",
+            )
+        )
+    await update.effective_message.reply_text("\n".join(lines))
+
+
+async def admin_ad_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.ad_add"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+    payload = _parse_ad_payload(context.args or [])
+    if payload is None:
+        await update.effective_message.reply_text(t("admin_ad_add_usage", lang))
+        return
+    try:
+        created = await create_ad(created_by=user.id, **payload)
+    except Exception as e:
+        await update.effective_message.reply_text(tf("admin_ad_failed", lang, error=str(e)))
+        return
+    await update.effective_message.reply_text(tf("admin_ad_added", lang, ad_id=created["ad_id"]))
+
+
+async def _admin_set_ad_enabled(update, context, enabled):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.ad_toggle"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+    ad_id = str((context.args or [""])[0]).strip()
+    if not ad_id:
+        await update.effective_message.reply_text(t("admin_ad_id_required", lang))
+        return
+    try:
+        updated = await set_ad_enabled(ad_id, enabled)
+    except KeyError:
+        await update.effective_message.reply_text(t("admin_ad_not_found", lang))
+        return
+    await update.effective_message.reply_text(
+        tf("admin_ad_enabled_changed", lang, ad_id=updated["ad_id"], status=t("enabled", lang) if enabled else t("disabled", lang))
+    )
+
+
+async def admin_ad_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _admin_set_ad_enabled(update, context, True)
+
+
+async def admin_ad_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _admin_set_ad_enabled(update, context, False)
+
+
+async def admin_ad_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.ad_delete"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+    ad_id = str((context.args or [""])[0]).strip()
+    if not ad_id:
+        await update.effective_message.reply_text(t("admin_ad_id_required", lang))
+        return
+    try:
+        await delete_ad(ad_id)
+    except KeyError:
+        await update.effective_message.reply_text(t("admin_ad_not_found", lang))
+        return
+    await update.effective_message.reply_text(tf("admin_ad_deleted", lang, ad_id=ad_id))
+
+
+async def admin_ad_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
+    if not _is_private_chat(update):
+        await update.effective_message.reply_text(t("admin_private_only", lang))
+        return
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.ad_send"):
+        await update.effective_message.reply_text(t("rbac_denied", lang))
+        return
+    ad_id = str((context.args or [""])[0]).strip()
+    if not ad_id:
+        await update.effective_message.reply_text(t("admin_ad_id_required", lang))
+        return
+    ad = await get_ad(ad_id)
+    if not ad:
+        await update.effective_message.reply_text(t("admin_ad_not_found", lang))
+        return
+    if not ad.get("enabled"):
+        await update.effective_message.reply_text(t("admin_ad_send_disabled", lang))
+        return
+    payload = {"op": "send_ad", "ad_id": ad_id}
+    nonce_data = await create_admin_nonce(user.id, payload)
+    nonce = nonce_data["nonce"]
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminop:confirm:{nonce}"),
+                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminop:cancel:{nonce}"),
+            ]
+        ]
+    )
+    await update.effective_message.reply_text(
+        tf(
+            "admin_confirm_send_ad",
+            lang,
+            ad_id=ad_id,
+            advertiser=ad.get("advertiser") or "-",
+            button_text=ad.get("button_text") or "-",
+        ),
+        reply_markup=keyboard,
+    )
 
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,7 +430,7 @@ async def admin_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_private_chat(update):
         await update.effective_message.reply_text(t("admin_private_only", lang))
         return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.profile"):
+    if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.profile"):
         await update.effective_message.reply_text(t("rbac_denied", lang))
         return
     target_id = user.id
@@ -243,58 +446,8 @@ async def admin_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "admin_profile_text",
             lang,
             user_id=target_id,
-            plan_type=profile.get("plan_type"),
-            plan_expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
             role=profile.get("role"),
         )
-    )
-
-
-async def admin_set_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
-    if not _is_private_chat(update):
-        await update.effective_message.reply_text(t("admin_private_only", lang))
-        return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.set_plan"):
-        await update.effective_message.reply_text(t("rbac_denied", lang))
-        return
-
-    target_id, plan_type, reason = _parse_target_and_value(context.args or [])
-    if target_id is None:
-        await update.effective_message.reply_text(t("admin_set_plan_usage", lang))
-        return
-    if plan_type not in _VALID_PLANS:
-        await update.effective_message.reply_text(tf("admin_invalid_plan", lang, value=plan_type))
-        return
-    if not reason:
-        reason = "manual admin action"
-    payload = {
-        "op": "set_plan",
-        "target_user_id": target_id,
-        "plan_type": plan_type,
-        "reason": reason,
-    }
-    nonce_data = await create_admin_nonce(user.id, payload)
-    nonce = nonce_data["nonce"]
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminop:confirm:{nonce}"),
-                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminop:cancel:{nonce}"),
-            ]
-        ]
-    )
-    await update.effective_message.reply_text(
-        tf(
-            "admin_confirm_set_plan",
-            lang,
-            target_user_id=target_id,
-            plan_type=plan_type,
-            reason=reason,
-            nonce=nonce,
-        ),
-        reply_markup=keyboard,
     )
 
 
@@ -339,158 +492,6 @@ async def admin_set_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lang,
             target_user_id=target_id,
             role=role,
-            reason=reason,
-            nonce=nonce,
-        ),
-        reply_markup=keyboard,
-    )
-
-
-async def admin_reset_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
-    if not _is_private_chat(update):
-        await update.effective_message.reply_text(t("admin_private_only", lang))
-        return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.reset_limit"):
-        await update.effective_message.reply_text(t("rbac_denied", lang))
-        return
-
-    if not context.args:
-        await update.effective_message.reply_text(t("admin_reset_limit_usage", lang))
-        return
-    target_id, reason = _parse_target_and_reason(context.args or [])
-    if target_id is None:
-        await update.effective_message.reply_text(t("admin_bad_user_id", lang))
-        return
-    month_label = None
-    tail = context.args[1:] if len(context.args) > 1 else []
-    if tail:
-        candidate = str(tail[0]).strip()
-        if candidate.isdigit() and len(candidate) == 6:
-            try:
-                month_label = normalize_usage_month_label(candidate)
-            except ValueError:
-                await update.effective_message.reply_text(tf("admin_reset_limit_bad_month", lang, value=candidate))
-                return
-            reason = " ".join(tail[1:]).strip()
-        else:
-            reason = " ".join(tail).strip()
-    if not reason:
-        reason = "manual admin action"
-
-    payload = {
-        "op": "reset_usage",
-        "target_user_id": target_id,
-        "month_label": month_label,
-        "reason": reason,
-    }
-    nonce_data = await create_admin_nonce(user.id, payload)
-    nonce = nonce_data["nonce"]
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminop:confirm:{nonce}"),
-                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminop:cancel:{nonce}"),
-            ]
-        ]
-    )
-    await update.effective_message.reply_text(
-        tf(
-            "admin_confirm_reset_limit",
-            lang,
-            target_user_id=target_id,
-            month_label=month_label or normalize_usage_month_label(),
-            reason=reason,
-            nonce=nonce,
-        ),
-        reply_markup=keyboard,
-    )
-
-
-async def admin_reset_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
-    if not _is_private_chat(update):
-        await update.effective_message.reply_text(t("admin_private_only", lang))
-        return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.reset_premium"):
-        await update.effective_message.reply_text(t("rbac_denied", lang))
-        return
-
-    target_id, reason = _parse_target_and_reason(context.args or [])
-    if target_id is None:
-        await update.effective_message.reply_text(t("admin_reset_premium_usage", lang))
-        return
-    if not reason:
-        reason = "manual admin action"
-    payload = {
-        "op": "set_plan",
-        "target_user_id": target_id,
-        "plan_type": PLAN_FREE,
-        "reason": reason,
-    }
-    nonce_data = await create_admin_nonce(user.id, payload)
-    nonce = nonce_data["nonce"]
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminop:confirm:{nonce}"),
-                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminop:cancel:{nonce}"),
-            ]
-        ]
-    )
-    await update.effective_message.reply_text(
-        tf(
-            "admin_confirm_set_plan",
-            lang,
-            target_user_id=target_id,
-            plan_type=PLAN_FREE,
-            reason=reason,
-            nonce=nonce,
-        ),
-        reply_markup=keyboard,
-    )
-
-
-async def admin_grant_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = await get_lang(user.id if user else None, getattr(user, "language_code", None))
-    if not _is_private_chat(update):
-        await update.effective_message.reply_text(t("admin_private_only", lang))
-        return
-    if not await rbac_check(user.id, PERM_PLAN_MANAGE, source="admin.grant_month"):
-        await update.effective_message.reply_text(t("rbac_denied", lang))
-        return
-
-    target_id, reason = _parse_target_and_reason(context.args or [])
-    if target_id is None:
-        await update.effective_message.reply_text(t("admin_grant_month_usage", lang))
-        return
-    if not reason:
-        reason = "manual admin action"
-    payload = {
-        "op": "set_plan",
-        "target_user_id": target_id,
-        "plan_type": PLAN_PREMIUM_MONTHLY,
-        "reason": reason,
-    }
-    nonce_data = await create_admin_nonce(user.id, payload)
-    nonce = nonce_data["nonce"]
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(t("confirm", lang), callback_data=f"adminop:confirm:{nonce}"),
-                InlineKeyboardButton(t("cancel", lang), callback_data=f"adminop:cancel:{nonce}"),
-            ]
-        ]
-    )
-    await update.effective_message.reply_text(
-        tf(
-            "admin_confirm_set_plan",
-            lang,
-            target_user_id=target_id,
-            plan_type=PLAN_PREMIUM_MONTHLY,
             reason=reason,
             nonce=nonce,
         ),
@@ -567,8 +568,41 @@ async def admin_operation_callback(update: Update, context: ContextTypes.DEFAULT
 
     op_payload = payload.get("payload") or {}
     op = op_payload.get("op")
-    required_perm = PERM_ROLE_MANAGE if op == "set_role" else PERM_PLAN_MANAGE
-    if not await rbac_check(user.id, required_perm, source=f"admin.confirm.{op or 'unknown'}"):
+    if op == "send_ad":
+        if not await rbac_check(user.id, PERM_ADMIN_ACCESS, source="admin.confirm.send_ad"):
+            try:
+                await query.edit_message_text(t("rbac_denied", lang))
+            except Exception:
+                await query.message.reply_text(t("rbac_denied", lang))
+            return
+        ad = await get_ad(op_payload.get("ad_id"))
+        if not ad:
+            try:
+                await query.edit_message_text(t("admin_ad_not_found", lang))
+            except Exception:
+                await query.message.reply_text(t("admin_ad_not_found", lang))
+            return
+        if not ad.get("enabled"):
+            try:
+                await query.edit_message_text(t("admin_ad_send_disabled", lang))
+            except Exception:
+                await query.message.reply_text(t("admin_ad_send_disabled", lang))
+            return
+        task = asyncio.create_task(_run_admin_ad_broadcast(context.application, user.id, ad))
+        _track_admin_background_task(task, actor_user_id=user.id)
+        try:
+            await query.edit_message_text(tf("admin_ad_send_started", lang, ad_id=ad["ad_id"]))
+        except Exception:
+            await query.message.reply_text(tf("admin_ad_send_started", lang, ad_id=ad["ad_id"]))
+        return
+
+    if op != "set_role":
+        try:
+            await query.edit_message_text(t("admin_nonce_invalid", lang))
+        except Exception:
+            await query.message.reply_text(t("admin_nonce_invalid", lang))
+        return
+    if not await rbac_check(user.id, PERM_ROLE_MANAGE, source=f"admin.confirm.{op or 'unknown'}"):
         try:
             await query.edit_message_text(t("rbac_denied", lang))
         except Exception:
@@ -610,15 +644,7 @@ async def admin_operation_callback(update: Update, context: ContextTypes.DEFAULT
 
     op = result.get("op")
     details = result.get("profile") or {}
-    if op == "set_plan":
-        text = tf(
-            "admin_set_plan_done",
-            lang,
-            target_user_id=details.get("user_id"),
-            plan_type=details.get("plan_type"),
-            plan_expires_at_utc=format_utc_iso_for_display(details.get("plan_expires_at_utc")),
-        )
-    elif op == "set_role":
+    if op == "set_role":
         text = tf(
             "admin_set_role_done",
             lang,
@@ -626,14 +652,7 @@ async def admin_operation_callback(update: Update, context: ContextTypes.DEFAULT
             role=details.get("role"),
         )
     else:
-        usage_info = result.get("usage") or {}
-        text = tf(
-            "admin_reset_limit_done",
-            lang,
-            target_user_id=usage_info.get("user_id"),
-            month_label=usage_info.get("month_label"),
-            previous_count=usage_info.get("previous_count", 0),
-        )
+        text = t("admin_operation_failed", lang)
     try:
         await query.edit_message_text(text)
     except Exception:

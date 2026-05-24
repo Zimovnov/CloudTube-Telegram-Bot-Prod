@@ -7,7 +7,6 @@ from telegram.ext import (
     CommandHandler,
     ConversationHandler,
     MessageHandler,
-    PreCheckoutQueryHandler,
     TypeHandler,
     filters,
 )
@@ -36,19 +35,21 @@ from app.config import (
 )
 from app.errors import ERR_FFMPEG_MISSING, ERR_SECURITY_WEAK_HASH_SALT
 from app.handlers.admin import (
-    admin_grant_month,
+    admin_ad_add,
+    admin_ad_delete,
+    admin_ad_off,
+    admin_ad_on,
+    admin_ad_send,
+    admin_ads,
     admin_broadcast,
     admin_broadcast_callback,
     admin_broadcast_capture,
     admin_help,
     admin_operation_callback,
     admin_profile,
-    admin_reset_limit,
-    admin_reset_premium,
-    admin_set_plan,
     admin_set_role,
 )
-from app.handlers.base import help_cmd, restart, start
+from app.handlers.base import help_cmd, legal_cmd, offer_cmd, privacy_cmd, restart, start
 from app.handlers.downloads import (
     cancel_callback,
     cancel_command,
@@ -59,19 +60,11 @@ from app.handlers.downloads import (
     yt_choice_callback,
 )
 from app.handlers.metadata import metadata_callback, metadata_expiry_sweeper, metadata_text_input_handler
-from app.handlers.payments import (
-    precheckout_handler,
-    premium_command,
-    subscription_callback,
-    successful_payment_handler,
-)
 from app.handlers.security import update_dedup_guard
 from app.handlers.settings import settings_callback, settings_menu
 from app.i18n import setup_bot_commands
 from app.jobs import init_redis_client, resolve_ffmpeg_path
 from app.logging_utils import log_event
-from app.payment_runtime import start_payment_runtime, stop_payment_runtime
-from app.payments_store import init_payments_store_sync
 from app.state import BACKGROUND_JOB_TASKS, BACKGROUND_JOB_TASKS_LOCK
 
 
@@ -110,14 +103,9 @@ async def _post_init(application):
     task = asyncio.create_task(metadata_expiry_sweeper(application))
     application.bot_data["metadata_expiry_sweeper_task"] = task
     _track_background_task(task)
-    await start_payment_runtime(application)
-    reconcile_task = application.bot_data.get("payment_reconcile_task")
-    if reconcile_task is not None:
-        _track_background_task(reconcile_task)
 
 
 async def _post_shutdown(application):
-    await stop_payment_runtime(application)
     task = application.bot_data.pop("metadata_expiry_sweeper_task", None)
     if task:
         task.cancel()
@@ -155,7 +143,6 @@ def main():
         )
 
     init_redis_client()
-    init_payments_store_sync()
     bootstrap_superadmin_sync()
     app = (
         ApplicationBuilder()
@@ -198,7 +185,9 @@ def main():
             CommandHandler("cancel", cancel_command),
             CommandHandler("help", help_cmd),
             CommandHandler("settings", settings_menu),
-            CommandHandler("premium", premium_command),
+            CommandHandler("legal", legal_cmd),
+            CommandHandler("privacy", privacy_cmd),
+            CommandHandler("offer", offer_cmd),
         ],
     )
 
@@ -208,29 +197,29 @@ def main():
     app.add_handler(conv)
 
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("legal", legal_cmd))
+    app.add_handler(CommandHandler("privacy", privacy_cmd))
+    app.add_handler(CommandHandler("offer", offer_cmd))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("settings", settings_menu))
-    app.add_handler(CommandHandler("premium", premium_command))
     app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("admin_ads", admin_ads))
+    app.add_handler(CommandHandler("admin_ad_add", admin_ad_add))
+    app.add_handler(CommandHandler("admin_ad_on", admin_ad_on))
+    app.add_handler(CommandHandler("admin_ad_off", admin_ad_off))
+    app.add_handler(CommandHandler("admin_ad_delete", admin_ad_delete))
+    app.add_handler(CommandHandler("admin_ad_send", admin_ad_send))
     app.add_handler(CommandHandler("admin_broadcast", admin_broadcast))
     app.add_handler(CommandHandler("admin_profile", admin_profile))
-    app.add_handler(CommandHandler("admin_setplan", admin_set_plan))
     app.add_handler(CommandHandler("admin_setrole", admin_set_role))
-    app.add_handler(CommandHandler("admin_resetlimit", admin_reset_limit))
-    app.add_handler(CommandHandler("admin_resetpremium", admin_reset_premium))
-    app.add_handler(CommandHandler("admin_grantmonth", admin_grant_month))
 
     app.add_handler(CallbackQueryHandler(settings_callback, pattern="^settings:"))
     app.add_handler(CallbackQueryHandler(trim_callback, pattern="^trim_"))
     app.add_handler(CallbackQueryHandler(cancel_callback, pattern="^cancel"))
     app.add_handler(CallbackQueryHandler(yt_choice_callback, pattern="^yt_"))
-    app.add_handler(CallbackQueryHandler(subscription_callback, pattern="^sub:"))
     app.add_handler(CallbackQueryHandler(admin_operation_callback, pattern="^adminop:"))
     app.add_handler(CallbackQueryHandler(admin_broadcast_callback, pattern="^adminbc:"))
     app.add_handler(CallbackQueryHandler(metadata_callback, pattern="^meta:"))
-
-    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     app.add_error_handler(error_handler)
 

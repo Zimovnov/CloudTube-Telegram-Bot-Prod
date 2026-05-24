@@ -4,7 +4,6 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
-from app.access import is_premium_plan
 from app.errors import ERR_METADATA_INVALID_INPUT, ERR_METADATA_NOT_ALLOWED, ERR_METADATA_SESSION_EXPIRED
 from app.i18n import get_lang, t, tf
 from app.logging_utils import log_event
@@ -67,8 +66,6 @@ async def maybe_offer_metadata_edit(
     artist,
     source_job_id,
 ):
-    if not is_premium_plan(plan_type):
-        return None
     if not bool((settings or {}).get("metadata_prompt_enabled", True)):
         return None
     session = await create_session(

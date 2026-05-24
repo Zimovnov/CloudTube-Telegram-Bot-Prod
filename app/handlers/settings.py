@@ -2,13 +2,11 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.access import PLAN_FREE, PLAN_PREMIUM_LIFETIME, format_utc_iso_for_display, get_user_profile, is_premium_plan
-from app.config import FREE_MAX_DURATION_SECONDS, FREE_MONTHLY_LIMIT, PREMIUM_MAX_DURATION_SECONDS, PREMIUM_MONTHLY_STARS
+from app.config import MAX_MEDIA_DURATION_SECONDS
 from app.i18n import get_lang, pack_mark, t, tf
 from app.jobs import allow_settings_change
 from app.logging_utils import log_event
 from app.settings_store import get_user_settings, set_user_settings
-from app.usage import get_free_usage_count
 
 
 def mk(button_rows):
@@ -111,23 +109,22 @@ async def _settings_action_back(query, user_id):
     await _safe_edit(query, t("menu_title", lang), reply_markup=build_main_settings_markup(s, lang))
 
 
-async def _show_format_root(query, s, lang, is_premium):
+async def _show_format_root(query, s, lang):
     kb = [
         [
             InlineKeyboardButton(t("soundcloud", lang), callback_data="settings:format_platform:soundcloud"),
             InlineKeyboardButton(t("youtube", lang), callback_data="settings:format_platform:youtube"),
         ],
     ]
-    if is_premium:
-        val = t("yes", lang) if bool(s.get("metadata_prompt_enabled", True)) else t("no", lang)
-        kb.append(
-            [
-                InlineKeyboardButton(
-                    tf("metadata_prompt_toggle", lang, value=val),
-                    callback_data="settings:toggle_metadata_prompt",
-                )
-            ]
-        )
+    val = t("yes", lang) if bool(s.get("metadata_prompt_enabled", True)) else t("no", lang)
+    kb.append(
+        [
+            InlineKeyboardButton(
+                tf("metadata_prompt_toggle", lang, value=val),
+                callback_data="settings:toggle_metadata_prompt",
+            )
+        ]
+    )
     kb.append([InlineKeyboardButton(t("back", lang), callback_data="settings:back")])
     await _safe_edit(query, f"{t('format_quality', lang)} — {t('back', lang)}", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -243,10 +240,6 @@ async def _toggle_logs(query, s, user_id, lang):
 
 
 async def _toggle_metadata_prompt(query, s, user_id, lang):
-    profile = await get_user_profile(user_id)
-    if not is_premium_plan(profile.get("plan_type")):
-        await _safe_edit(query, t("metadata_premium_only", lang))
-        return
     prev = bool(s.get("metadata_prompt_enabled", True))
     s["metadata_prompt_enabled"] = not prev
     await set_user_settings(user_id, s)
@@ -255,37 +248,8 @@ async def _toggle_metadata_prompt(query, s, user_id, lang):
 
 
 async def _show_limits(query, user_id, lang):
-    profile = await get_user_profile(user_id)
-    usage_count = await get_free_usage_count(user_id)
-    plan = profile.get("plan_type")
-    if plan == PLAN_FREE:
-        text = tf(
-            "limits_free_text",
-            lang,
-            count=usage_count,
-            limit=FREE_MONTHLY_LIMIT,
-            max_hours=int(FREE_MAX_DURATION_SECONDS / 3600),
-            premium_stars=PREMIUM_MONTHLY_STARS,
-        )
-        kb = [
-            [InlineKeyboardButton(t("buy_premium_button", lang), callback_data="sub:buy_monthly")],
-            [InlineKeyboardButton(t("back", lang), callback_data="settings:back")],
-        ]
-    elif plan == PLAN_PREMIUM_LIFETIME:
-        text = tf(
-            "limits_premium_lifetime_text",
-            lang,
-            max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
-        )
-        kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
-    else:
-        text = tf(
-            "limits_premium_monthly_text",
-            lang,
-            max_hours=int(PREMIUM_MAX_DURATION_SECONDS / 3600),
-            expires_at_utc=format_utc_iso_for_display(profile.get("plan_expires_at_utc")),
-        )
-        kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
+    text = tf("rules_text", lang, max_hours=int(MAX_MEDIA_DURATION_SECONDS / 3600))
+    kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
     await _safe_edit(query, text, reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -333,9 +297,6 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split(":")
     s = await get_user_settings(user_id)
     lang = await get_lang(user_id, user.language_code)
-    profile = await get_user_profile(user_id)
-    premium = is_premium_plan(profile.get("plan_type"))
-
     if not allow_settings_change(user_id):
         try:
             await query.answer(t("slow_down", lang), show_alert=True)
@@ -359,7 +320,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 2:
         action = parts[1]
         simple_routes = {
-            "format": lambda: _show_format_root(query, s, lang, premium),
+            "format": lambda: _show_format_root(query, s, lang),
             "trimming": lambda: _show_trimming_root(query, lang),
             "logs": lambda: _toggle_logs(query, s, user_id, lang),
             "limits": lambda: _show_limits(query, user_id, lang),

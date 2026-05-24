@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -112,10 +112,10 @@ REDIS_HEALTH_CHECK_INTERVAL = _env_int("REDIS_HEALTH_CHECK_INTERVAL", 30)
 REDIS_MAX_CONNECTIONS = _env_int("REDIS_MAX_CONNECTIONS", 50)
 SETTINGS_THROTTLE_MS = max(100, _env_int("SETTINGS_THROTTLE_MS", 500))
 REDIS_ERROR_LOG_COOLDOWN_SECONDS = max(5, _env_int("REDIS_ERROR_LOG_COOLDOWN_SECONDS", 30))
-YTDLP_SOCKET_TIMEOUT = max(15, _env_int("YTDLP_SOCKET_TIMEOUT", 90))
-YTDLP_RETRIES = max(1, _env_int("YTDLP_RETRIES", 6))
-YTDLP_FRAGMENT_RETRIES = max(1, _env_int("YTDLP_FRAGMENT_RETRIES", 10))
-YTDLP_META_SOCKET_TIMEOUT = max(10, _env_int("YTDLP_META_SOCKET_TIMEOUT", 30))
+YTDLP_SOCKET_TIMEOUT = max(15, _env_int("YTDLP_SOCKET_TIMEOUT", 30))
+YTDLP_RETRIES = max(1, _env_int("YTDLP_RETRIES", 2))
+YTDLP_FRAGMENT_RETRIES = max(1, _env_int("YTDLP_FRAGMENT_RETRIES", 3))
+YTDLP_META_SOCKET_TIMEOUT = max(10, _env_int("YTDLP_META_SOCKET_TIMEOUT", 15))
 YTDLP_FORCE_IPV4 = _env_bool("YTDLP_FORCE_IPV4", default=True)
 YTDLP_HTTP_CHUNK_SIZE = max(0, _env_int("YTDLP_HTTP_CHUNK_SIZE", 10 * 1024 * 1024))
 YTDLP_COOKIES_FILE = (os.getenv("YTDLP_COOKIES_FILE") or "/app/cookies.txt").strip()
@@ -124,7 +124,7 @@ YTDLP_JS_RUNTIMES_MAP = _parse_js_runtimes_map(YTDLP_JS_RUNTIMES)
 YTDLP_REMOTE_COMPONENTS = _env_str_list("YTDLP_REMOTE_COMPONENTS", default=["ejs:github"])
 DOWNLOAD_STALL_TIMEOUT_SECONDS = max(30, _env_int("DOWNLOAD_STALL_TIMEOUT_SECONDS", 120))
 DOWNLOAD_STALL_CHECK_INTERVAL_SECONDS = max(3, _env_int("DOWNLOAD_STALL_CHECK_INTERVAL_SECONDS", 6))
-EXTERNAL_UPLOAD_TIMEOUT_SECONDS = max(30, _env_int("EXTERNAL_UPLOAD_TIMEOUT_SECONDS", 600))
+EXTERNAL_UPLOAD_TIMEOUT_SECONDS = max(30, _env_int("EXTERNAL_UPLOAD_TIMEOUT_SECONDS", 180))
 FFMPEG_REQUIRED_ON_STARTUP = _env_bool("FFMPEG_REQUIRED_ON_STARTUP", default=True)
 MIN_SECONDS_BETWEEN_DOWNLOADS = max(1, _env_int("MIN_SECONDS_BETWEEN_DOWNLOADS", 15))
 TELEGRAM_CONNECT_TIMEOUT = max(5.0, _env_float("TELEGRAM_CONNECT_TIMEOUT", 20.0))
@@ -145,22 +145,23 @@ TELEGRAM_GET_UPDATES_POOL_TIMEOUT = max(
     1.0, _env_float("TELEGRAM_GET_UPDATES_POOL_TIMEOUT", TELEGRAM_POOL_TIMEOUT)
 )
 
+MAX_MEDIA_DURATION_SECONDS = max(60, _env_int("MAX_MEDIA_DURATION_SECONDS", 3 * 60 * 60))
+
+# Legacy payment/plan constants are kept so old modules can still be imported for
+# historical data inspection, but active bot runtime no longer uses them.
 FREE_MONTHLY_LIMIT = max(1, _env_int("FREE_MONTHLY_LIMIT", 42))
-FREE_MAX_DURATION_SECONDS = max(60, _env_int("FREE_MAX_DURATION_SECONDS", 3 * 60 * 60))
-PREMIUM_MAX_DURATION_SECONDS = max(
-    FREE_MAX_DURATION_SECONDS,
-    _env_int("PREMIUM_MAX_DURATION_SECONDS", 10 * 60 * 60),
-)
+FREE_MAX_DURATION_SECONDS = MAX_MEDIA_DURATION_SECONDS
+PREMIUM_MAX_DURATION_SECONDS = MAX_MEDIA_DURATION_SECONDS
 PREMIUM_MONTHLY_STARS = max(0, _env_int("PREMIUM_MONTHLY_STARS", 0))
 PREMIUM_PERIOD_SECONDS = max(60, _env_int("PREMIUM_PERIOD_SECONDS", 30 * 24 * 60 * 60))
 TELEGRAM_STARS_PROVIDER_TOKEN = (os.getenv("TELEGRAM_STARS_PROVIDER_TOKEN") or "").strip()
 PAYMENTS_DATABASE_URL = (os.getenv("PAYMENTS_DATABASE_URL") or "").strip()
 MIGRATIONS_DATABASE_URL = (os.getenv("MIGRATIONS_DATABASE_URL") or PAYMENTS_DATABASE_URL).strip()
-PAYMENTS_DB_REQUIRED = _env_bool("PAYMENTS_DB_REQUIRED", default=True)
+PAYMENTS_DB_REQUIRED = _env_bool("PAYMENTS_DB_REQUIRED", default=False)
 PAYMENTS_DB_CONNECT_TIMEOUT = max(1, _env_int("PAYMENTS_DB_CONNECT_TIMEOUT", 5))
 PAYMENTS_ALERT_WINDOW_SECONDS = max(60, _env_int("PAYMENTS_ALERT_WINDOW_SECONDS", 900))
 PAYMENTS_ALERT_THRESHOLD = max(1, _env_int("PAYMENTS_ALERT_THRESHOLD", 10))
-PAYMENTS_STRICT_PROD = _env_bool("PAYMENTS_STRICT_PROD", default=APP_ENV == "prod")
+PAYMENTS_STRICT_PROD = _env_bool("PAYMENTS_STRICT_PROD", default=False)
 PAYMENTS_ALLOW_INMEMORY_FALLBACK = _env_bool("PAYMENTS_ALLOW_INMEMORY_FALLBACK", default=not PAYMENTS_STRICT_PROD)
 PAYMENT_SESSION_WINDOW_SECONDS = max(30, _env_int("PAYMENT_SESSION_WINDOW_SECONDS", 300))
 PAYMENT_BUTTON_THROTTLE_SECONDS = max(1, _env_int("PAYMENT_BUTTON_THROTTLE_SECONDS", 2))
@@ -180,7 +181,7 @@ ROBOKASSA_WEBHOOK_BIND_HOST = (os.getenv("ROBOKASSA_WEBHOOK_BIND_HOST") or "0.0.
 ROBOKASSA_WEBHOOK_BIND_PORT = max(1, _env_int("ROBOKASSA_WEBHOOK_BIND_PORT", 8080))
 ROBOKASSA_WEBHOOK_PATH = (os.getenv("ROBOKASSA_WEBHOOK_PATH") or "/webhooks/robokassa").strip() or "/webhooks/robokassa"
 
-RUNNING_JOB_TTL_SECONDS = max(60, _env_int("RUNNING_JOB_TTL_SECONDS", PREMIUM_MAX_DURATION_SECONDS + 3600))
+RUNNING_JOB_TTL_SECONDS = max(60, _env_int("RUNNING_JOB_TTL_SECONDS", MAX_MEDIA_DURATION_SECONDS + 3600))
 PAYMENT_DEDUP_TTL_SECONDS = max(3600, _env_int("PAYMENT_DEDUP_TTL_SECONDS", 400 * 24 * 60 * 60))
 UPDATE_DEDUP_TTL_SECONDS = max(300, _env_int("UPDATE_DEDUP_TTL_SECONDS", 24 * 60 * 60))
 USAGE_COUNTER_TTL_SECONDS = max(24 * 60 * 60, _env_int("USAGE_COUNTER_TTL_SECONDS", 400 * 24 * 60 * 60))
@@ -199,10 +200,13 @@ METADATA_STORAGE_DIR = (
     or os.path.join(os.getenv("TEMP") or "/tmp", "soundbot_metadata")
 ).strip()
 
-PREMIUM_PROMPT_ON_LIMIT = _env_bool("PREMIUM_PROMPT_ON_LIMIT", default=True)
+PUBLIC_PRIVACY_URL = (os.getenv("PUBLIC_PRIVACY_URL") or "").strip()
+PUBLIC_OFFER_URL = (os.getenv("PUBLIC_OFFER_URL") or "").strip()
+PUBLIC_PD_CONSENT_URL = (os.getenv("PUBLIC_PD_CONSENT_URL") or "").strip()
+LEGAL_ACCEPTANCE_TTL_SECONDS = max(300, _env_int("LEGAL_ACCEPTANCE_TTL_SECONDS", 24 * 60 * 60))
 
 # Backward compatibility with legacy code path.
-MAX_DURATION = FREE_MAX_DURATION_SECONDS
+MAX_DURATION = MAX_MEDIA_DURATION_SECONDS
 
 ASK_TRIM, ASK_RANGE, ASK_TYPE, ASK_TRIM_YT, ASK_RANGE_YT = range(5)
 
@@ -219,18 +223,6 @@ def _parse_url_or_none(raw):
     return urlparse(text)
 
 
-def _validate_postgres_tls(errors):
-    parsed = _parse_url_or_none(PAYMENTS_DATABASE_URL)
-    if parsed is None:
-        errors.append("PAYMENTS_DATABASE_URL must be a URL in strict mode.")
-        return
-    if _is_local_host(parsed.hostname):
-        return
-    sslmode = (parse_qs(parsed.query).get("sslmode") or [""])[0].strip().lower()
-    if sslmode not in ("require", "verify-ca", "verify-full"):
-        errors.append("PAYMENTS_DATABASE_URL must enforce PostgreSQL SSL via sslmode=require or stronger in strict mode.")
-
-
 def _validate_redis_tls(errors):
     parsed = _parse_url_or_none(REDIS_URL)
     if parsed is None:
@@ -244,35 +236,12 @@ def _validate_redis_tls(errors):
 
 def validate_runtime_configuration():
     errors = []
-    if PAYMENTS_STRICT_PROD:
-        if not PAYMENTS_DB_REQUIRED:
-            errors.append("PAYMENTS_DB_REQUIRED must be enabled in strict mode.")
-        if PAYMENTS_ALLOW_INMEMORY_FALLBACK:
-            errors.append("PAYMENTS_ALLOW_INMEMORY_FALLBACK must be disabled in strict mode.")
-        if not PAYMENTS_DATABASE_URL:
-            errors.append("PAYMENTS_DATABASE_URL is required in strict mode.")
-        if not MIGRATIONS_DATABASE_URL:
-            errors.append("MIGRATIONS_DATABASE_URL is required in strict mode.")
+    if APP_ENV == "prod":
         if not REDIS_REQUIRED:
             errors.append("REDIS_REQUIRED must be enabled in strict mode.")
         if not REDIS_URL:
             errors.append("REDIS_URL is required in strict mode.")
-        if PAYMENTS_DATABASE_URL:
-            _validate_postgres_tls(errors)
         if REDIS_URL:
             _validate_redis_tls(errors)
-        if ROBOKASSA_WEBHOOK_ENABLED:
-            if not ROBOKASSA_MERCHANT_LOGIN:
-                errors.append("ROBOKASSA_MERCHANT_LOGIN is required when webhook is enabled.")
-            if not ROBOKASSA_PASSWORD1:
-                errors.append("ROBOKASSA_PASSWORD1 is required when webhook is enabled.")
-            if not ROBOKASSA_PASSWORD2:
-                errors.append("ROBOKASSA_PASSWORD2 is required when webhook is enabled.")
-            if not ROBOKASSA_WEBHOOK_BIND_HOST:
-                errors.append("ROBOKASSA_WEBHOOK_BIND_HOST is required when webhook is enabled.")
-            if not ROBOKASSA_WEBHOOK_PATH.startswith("/"):
-                errors.append("ROBOKASSA_WEBHOOK_PATH must start with '/'.")
-            if ROBOKASSA_WEBHOOK_BIND_PORT <= 0:
-                errors.append("ROBOKASSA_WEBHOOK_BIND_PORT must be positive.")
     if errors:
         raise RuntimeError("Invalid runtime configuration:\n- " + "\n- ".join(errors))

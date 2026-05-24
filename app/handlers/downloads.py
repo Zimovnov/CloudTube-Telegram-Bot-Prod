@@ -24,13 +24,12 @@ from app.config import (
     YTDLP_META_SOCKET_TIMEOUT,
     YTDLP_REMOTE_COMPONENTS,
 )
-from app.access import PLAN_FREE, get_user_profile, is_premium_plan
+from app.access import get_user_profile
 from app.errors import (
     ERR_COOLDOWN_ACTIVE,
     ERR_DOWNLOAD_FAILED,
     ERR_FILE_NOT_FOUND,
     ERR_FFMPEG_MISSING,
-    ERR_FREE_LIMIT_REACHED,
     ERR_HTTP_NOT_FOUND,
     ERR_INVALID_LINK,
     ERR_INVALID_RANGE_FORMAT,
@@ -53,7 +52,6 @@ from app.errors import (
     ERR_WORKER_UPLOAD_HTTP,
 )
 from app.handlers.metadata import cancel_active_metadata_edit, maybe_offer_metadata_edit
-from app.handlers.payments import build_premium_markup
 from app.i18n import get_lang, t, tf
 from app.jobs import (
     abort_user_job,
@@ -78,7 +76,6 @@ from app.settings_store import (
     get_user_settings,
     log_user_event_if_enabled,
 )
-from app.usage import increment_usage_success_once
 from app.services.worker import (
     _progress_consumer,
     _progress_watcher,
@@ -210,7 +207,7 @@ def schedule_download_background(
     message=None,
     prompt_chat_id=None,
     prompt_message_id=None,
-    plan_snapshot=PLAN_FREE,
+    plan_snapshot=None,
     max_duration_seconds=MAX_DURATION,
 ):
     target_message = message or getattr(update, "effective_message", None)
@@ -244,20 +241,7 @@ def schedule_download_background(
             if bool((download_result or {}).get("metadata_prompt_offered")):
                 return
             try:
-                profile = await get_user_profile(user_id)
-                policy = await resolve_user_download_policy(profile)
-                if policy["blocked_by_limit"]:
-                    await target_message.reply_text(
-                        tf(
-                            "free_limit_reached",
-                            lang,
-                            count=policy["usage_count"],
-                            limit=policy["free_limit"],
-                        ),
-                        reply_markup=build_premium_markup(lang),
-                    )
-                else:
-                    await target_message.reply_text(t("send_another", lang))
+                await target_message.reply_text(t("send_another", lang))
             except Exception:
                 pass
         except asyncio.CancelledError:
@@ -317,40 +301,8 @@ async def _start_download_flow(
 ):
     profile = await get_user_profile(owner_id)
     policy = await resolve_user_download_policy(profile)
-    plan_snapshot = policy["plan_type"]
+    plan_snapshot = "standard"
     max_duration_seconds = int(policy["max_duration_seconds"])
-    if policy["blocked_by_limit"]:
-        await log_user_event_if_enabled(
-            owner_id,
-            "limit.free.blocked",
-            level="WARNING",
-            error_code=ERR_FREE_LIMIT_REACHED,
-            user_logs_enabled=user_logs_enabled,
-            usage_count=policy["usage_count"],
-            usage_limit=policy["free_limit"],
-        )
-        log_event(
-            "limit.free.blocked",
-            level="WARNING",
-            error_code=ERR_FREE_LIMIT_REACHED,
-            user_id=owner_id,
-            usage_count=policy["usage_count"],
-            usage_limit=policy["free_limit"],
-        )
-        try:
-            await message.reply_text(
-                tf(
-                    "free_limit_reached",
-                    lang,
-                    count=policy["usage_count"],
-                    limit=policy["free_limit"],
-                ),
-                reply_markup=build_premium_markup(lang),
-            )
-        except Exception:
-            pass
-        clear_conversation_state(context, owner_id)
-        return ASK_TRIM
 
     if not start_job(context, owner_id):
         await log_user_event_if_enabled(
@@ -918,7 +870,7 @@ async def download_content(
     end=None,
     yt_type="audio",
     message=None,
-    plan_snapshot=PLAN_FREE,
+    plan_snapshot=None,
     max_duration_seconds=MAX_DURATION,
 ):
     result_flags = {"metadata_prompt_offered": False}
@@ -1281,15 +1233,11 @@ async def download_content(
                         yt_type=yt_type,
                     )
 
-            if delivery_success and user_id is not None and plan_snapshot == PLAN_FREE:
-                await increment_usage_success_once(user_id, job_id)
-
             if (
                 delivery_success
                 and user_id is not None
                 and delivered_ext == "mp3"
                 and delivered_file_path
-                and is_premium_plan(plan_snapshot)
             ):
                 try:
                     user_settings = await get_user_settings(user_id)

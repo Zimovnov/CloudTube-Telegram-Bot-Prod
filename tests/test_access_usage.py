@@ -1,6 +1,5 @@
 import os
 import unittest
-from datetime import timedelta
 from unittest import mock
 
 os.environ.setdefault("BOT_TOKEN", "test-token")
@@ -104,26 +103,6 @@ class AccessAndUsageTests(unittest.TestCase):
         profile = access.get_user_profile_sync(999001)
         self.assertEqual(profile["role"], access.ROLE_SUPERADMIN)
 
-    def test_monthly_extension_and_auto_expiry(self):
-        uid = 12345
-        first = access.activate_or_extend_monthly_sync(uid, charge_id="c1")
-        second = access.activate_or_extend_monthly_sync(uid, charge_id="c2")
-        self.assertEqual(second["plan_type"], access.PLAN_PREMIUM_MONTHLY)
-        self.assertNotEqual(first["plan_expires_at_utc"], second["plan_expires_at_utc"])
-
-        expired_dt = access.utc_now() - timedelta(seconds=10)
-        access.set_user_profile_sync(
-            {
-                "user_id": uid,
-                "plan_type": access.PLAN_PREMIUM_MONTHLY,
-                "plan_expires_at_utc": access.to_utc_iso(expired_dt),
-                "role": access.ROLE_USER,
-            }
-        )
-        effective = access.get_user_profile_sync(uid)
-        self.assertEqual(effective["plan_type"], access.PLAN_FREE)
-        self.assertIsNone(effective["plan_expires_at_utc"])
-
     def test_last_superadmin_cannot_be_removed(self):
         uid = 70001
         access.set_role_sync(uid, access.ROLE_SUPERADMIN, actor_user_id=None, reason="bootstrap")
@@ -170,9 +149,7 @@ class AccessAndUsageTests(unittest.TestCase):
         self.assertTrue(state.LOCAL_AUDIT_EVENTS)
         self.assertEqual(state.LOCAL_AUDIT_EVENTS[0].get("event"), "usage.reset")
 
-    def test_payment_and_update_dedup(self):
-        self.assertTrue(usage.register_payment_once_sync("pay-1"))
-        self.assertFalse(usage.register_payment_once_sync("pay-1"))
+    def test_update_dedup(self):
         self.assertTrue(usage.register_update_once_sync(101))
         self.assertFalse(usage.register_update_once_sync(101))
 

@@ -1,20 +1,4 @@
 services:
-  postgres:
-    image: postgres:16.8-alpine
-    container_name: soundcloud_postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=soundbot
-      - POSTGRES_USER=soundbot
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U soundbot -d soundbot"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-
   redis:
     image: redis:7.4.3-alpine
     container_name: soundcloud_redis
@@ -36,22 +20,6 @@ services:
       timeout: 3s
       retries: 5
 
-  migrate:
-    build:
-      context: .
-    container_name: soundcloud_migrate
-    restart: "no"
-    env_file:
-      - .env
-    environment:
-      - APP_ENV=${APP_ENV:-dev}
-      - MIGRATIONS_DATABASE_URL=${MIGRATIONS_DATABASE_URL:-}
-      - PAYMENTS_DATABASE_URL=${PAYMENTS_DATABASE_URL:?PAYMENTS_DATABASE_URL is required}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["python", "-m", "app.migrations"]
-
   bot:
     build:
       context: .
@@ -64,33 +32,16 @@ services:
       - REDIS_URL=${REDIS_URL:?REDIS_URL is required}
       - REDIS_KEY_PREFIX=${REDIS_KEY_PREFIX:-soundbot}
       - REDIS_REQUIRED=${REDIS_REQUIRED:-1}
-      - PAYMENTS_DATABASE_URL=${PAYMENTS_DATABASE_URL:?PAYMENTS_DATABASE_URL is required}
-      - MIGRATIONS_DATABASE_URL=${MIGRATIONS_DATABASE_URL:-}
-      - PAYMENTS_DB_REQUIRED=${PAYMENTS_DB_REQUIRED:-1}
-      - PAYMENTS_DB_CONNECT_TIMEOUT=${PAYMENTS_DB_CONNECT_TIMEOUT:-5}
-      - PAYMENTS_ALERT_WINDOW_SECONDS=${PAYMENTS_ALERT_WINDOW_SECONDS:-900}
-      - PAYMENTS_ALERT_THRESHOLD=${PAYMENTS_ALERT_THRESHOLD:-10}
-      - PAYMENTS_STRICT_PROD=${PAYMENTS_STRICT_PROD:-0}
-      - PAYMENTS_ALLOW_INMEMORY_FALLBACK=${PAYMENTS_ALLOW_INMEMORY_FALLBACK:-0}
-      - YOOKASSA_WEBHOOK_ENABLED=${YOOKASSA_WEBHOOK_ENABLED:-0}
-      - YOOKASSA_WEBHOOK_BIND_HOST=${YOOKASSA_WEBHOOK_BIND_HOST:-0.0.0.0}
-      - YOOKASSA_WEBHOOK_BIND_PORT=${YOOKASSA_WEBHOOK_BIND_PORT:-8080}
-      - YOOKASSA_WEBHOOK_PATH=${YOOKASSA_WEBHOOK_PATH:-/webhooks/yookassa}
-      - YOOKASSA_RECONCILE_ENABLED=${YOOKASSA_RECONCILE_ENABLED:-1}
-      - YOOKASSA_RECONCILE_INTERVAL_SEC=${YOOKASSA_RECONCILE_INTERVAL_SEC:-60}
+      - MAX_MEDIA_DURATION_SECONDS=${MAX_MEDIA_DURATION_SECONDS:-10800}
       - LOG_TO_STDOUT=${LOG_TO_STDOUT:-1}
       - LOG_TO_FILE=${LOG_TO_FILE:-1}
       - LOG_FILE=${LOG_FILE:-/app/logs/bot.log}
-      - LOG_FILE_MAX_BYTES=${LOG_FILE_MAX_BYTES:-20971520}
-      - LOG_FILE_BACKUP_COUNT=${LOG_FILE_BACKUP_COUNT:-10}
+      - LOG_FILE_MAX_BYTES=${LOG_FILE_MAX_BYTES:-5242880}
+      - LOG_FILE_BACKUP_COUNT=${LOG_FILE_BACKUP_COUNT:-3}
       - FFMPEG_REQUIRED_ON_STARTUP=${FFMPEG_REQUIRED_ON_STARTUP:-1}
     depends_on:
       redis:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     volumes:
       - ./cookies.txt:/app/cookies.txt:ro
       - ./logs:/app/logs
@@ -104,9 +55,8 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "5"
+        max-size: "5m"
+        max-file: "3"
 
 volumes:
   redis_data:
-  postgres_data:

@@ -68,7 +68,9 @@ def _build_bot_commands(lang):
         BotCommand("cancel", t("cmd_cancel", lang)),
         BotCommand("help", t("cmd_help", lang)),
         BotCommand("settings", t("cmd_settings", lang)),
-        BotCommand("premium", t("cmd_premium", lang)),
+        BotCommand("legal", t("cmd_legal", lang)),
+        BotCommand("privacy", t("cmd_privacy", lang)),
+        BotCommand("offer", t("cmd_offer", lang)),
     ]
 
 
