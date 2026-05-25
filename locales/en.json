@@ -149,7 +149,7 @@
   "admin_broadcast_unsupported": "Only text and photos are supported. Send text, a photo, or a photo with caption.",
   "admin_profile_text": "Profile:\nuser_id: {user_id}\nrole: {role}",
   "faq_text": "FAQ:\n1) Requests are unlimited.\n2) Maximum media duration is 3 hours.\n3) After an mp3 is delivered, you can edit title/artist.\n4) Metadata edit session TTL is 1 hour from the last action.",
-  "start_hint": "Commands: /start, /cancel, /help, /settings, /legal",
+  "start_hint": "Commands: /start, /cancel, /help, /settings",
   "rules_text": "Usage rules:\nRequests: unlimited.\nMaximum media duration: {max_hours} h.\nMP3 metadata editing: available.",
   "admin_help": "Admin commands:\n/admin_profile [user_id]\n/admin_ads\n/admin_ad_add button_text | url | advertiser | erid | text\n/admin_ad_on ad_id\n/admin_ad_off ad_id\n/admin_ad_delete ad_id\n/admin_ad_send ad_id\n/admin_broadcast\n/admin_setrole user_id user|admin|superadmin [reason]",
   "admin_ads_empty": "No ad campaigns configured.",

@@ -39,6 +39,9 @@ class AdsPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         commands = _build_bot_commands("en")
         names = [item.command for item in commands]
         self.assertNotIn("premium", names)
+        self.assertNotIn("legal", names)
+        self.assertNotIn("privacy", names)
+        self.assertNotIn("offer", names)
 
     async def test_metadata_prompt_is_available_without_plan_gate(self):
         message = SimpleNamespace(reply_text=AsyncMock())

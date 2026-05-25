@@ -49,7 +49,7 @@ from app.handlers.admin import (
     admin_profile,
     admin_set_role,
 )
-from app.handlers.base import help_cmd, legal_cmd, offer_cmd, privacy_cmd, restart, start
+from app.handlers.base import help_cmd, restart, start
 from app.handlers.downloads import (
     cancel_callback,
     cancel_command,
@@ -185,9 +185,6 @@ def main():
             CommandHandler("cancel", cancel_command),
             CommandHandler("help", help_cmd),
             CommandHandler("settings", settings_menu),
-            CommandHandler("legal", legal_cmd),
-            CommandHandler("privacy", privacy_cmd),
-            CommandHandler("offer", offer_cmd),
         ],
     )
 
@@ -197,9 +194,6 @@ def main():
     app.add_handler(conv)
 
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("legal", legal_cmd))
-    app.add_handler(CommandHandler("privacy", privacy_cmd))
-    app.add_handler(CommandHandler("offer", offer_cmd))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("settings", settings_menu))
     app.add_handler(CommandHandler("admin", admin_help))

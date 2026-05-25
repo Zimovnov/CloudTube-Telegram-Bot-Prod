@@ -149,7 +149,7 @@
   "admin_broadcast_unsupported": "Поддерживаются только текст и фото. Пришлите текст, фото или фото с подписью.",
   "admin_profile_text": "Профиль:\nuser_id: {user_id}\nrole: {role}",
   "faq_text": "FAQ:\n1) Запросы не ограничены по количеству.\n2) Максимальная длительность медиа — 3 часа.\n3) После отправки mp3 можно отредактировать title/artist.\n4) Сессия редактирования метаданных живет 1 час с последнего действия.",
-  "start_hint": "Команды: /start, /cancel, /help, /settings, /legal",
+  "start_hint": "Команды: /start, /cancel, /help, /settings",
   "rules_text": "Правила использования:\nЗапросы: без ограничений по количеству.\nМаксимальная длительность медиа: {max_hours} ч.\nРедактирование метаданных mp3: доступно.",
   "admin_help": "Админ-команды:\n/admin_profile [user_id]\n/admin_ads\n/admin_ad_add button_text | url | advertiser | erid | text\n/admin_ad_on ad_id\n/admin_ad_off ad_id\n/admin_ad_delete ad_id\n/admin_ad_send ad_id\n/admin_broadcast\n/admin_setrole user_id user|admin|superadmin [reason]",
   "admin_ads_empty": "Рекламные объявления не настроены.",

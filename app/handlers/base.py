@@ -5,18 +5,6 @@ from app.access import ROLE_ADMIN, ROLE_SUPERADMIN, get_user_profile
 from app.config import ASK_TRIM
 from app.i18n import get_lang, t
 from app.jobs import abort_user_job, clear_conversation_state
-from app.legal_utils import build_public_legal_markup, get_public_legal_url, has_public_legal_urls
-
-
-async def _send_public_doc(message, *, lang, doc_kind, text_key):
-    url = get_public_legal_url(doc_kind)
-    if not url:
-        await message.reply_text(t("legal_specific_unavailable", lang))
-        return
-    await message.reply_text(
-        f"{t(text_key, lang)}\n{url}",
-        reply_markup=build_public_legal_markup(lang, kinds=(doc_kind,), row_width=1),
-    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -24,11 +12,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id if user else None
     lang = await get_lang(user_id, getattr(user, "language_code", None))
     text = f"{t('start_prompt', lang)}\n\n{t('start_hint', lang)}"
-    reply_markup = None
-    if has_public_legal_urls():
-        text = f"{text}\n\n{t('start_legal_notice', lang)}"
-        reply_markup = build_public_legal_markup(lang)
-    await update.effective_message.reply_text(text, reply_markup=reply_markup)
+    await update.effective_message.reply_text(text)
     return ASK_TRIM
 
 
@@ -54,9 +38,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/cancel - cancel current step\n"
             "/help - this help\n"
             "/settings - open settings\n"
-            "/legal - legal documents\n"
-            "/privacy - privacy policy\n"
-            "/offer - public offer\n\n"
+            "\n"
             "Just send a track or video link."
         )
     else:
@@ -67,9 +49,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/cancel - отменить текущий шаг\n"
             "/help - эта справка\n"
             "/settings - открыть меню настроек\n"
-            "/legal - правовые документы\n"
-            "/privacy - политика обработки данных\n"
-            "/offer - публичная оферта\n\n"
+            "\n"
             "Просто пришли ссылку на трек или видео."
         )
 
@@ -88,32 +68,4 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/admin_setrole <user_id> <user|admin|superadmin> [reason]"
         )
 
-    reply_markup = build_public_legal_markup(lang) if has_public_legal_urls() else None
-    await update.effective_message.reply_text(base_help, reply_markup=reply_markup)
-
-
-async def legal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id if user else None
-    lang = await get_lang(user_id, getattr(user, "language_code", None))
-    if not has_public_legal_urls():
-        await update.effective_message.reply_text(t("legal_docs_unavailable", lang))
-        return
-    await update.effective_message.reply_text(
-        t("legal_docs_text", lang),
-        reply_markup=build_public_legal_markup(lang),
-    )
-
-
-async def privacy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id if user else None
-    lang = await get_lang(user_id, getattr(user, "language_code", None))
-    await _send_public_doc(update.effective_message, lang=lang, doc_kind="privacy", text_key="legal_privacy_text")
-
-
-async def offer_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id if user else None
-    lang = await get_lang(user_id, getattr(user, "language_code", None))
-    await _send_public_doc(update.effective_message, lang=lang, doc_kind="offer", text_key="legal_offer_text")
+    await update.effective_message.reply_text(base_help)
