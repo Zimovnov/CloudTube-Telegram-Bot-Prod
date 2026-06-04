@@ -35,6 +35,8 @@ def _build_update(user_id=1, chat_id=100, language_code="ru"):
         chat=SimpleNamespace(id=chat_id),
         from_user=user,
         reply_text=AsyncMock(),
+        reply_audio=AsyncMock(),
+        reply_video=AsyncMock(),
     )
     return SimpleNamespace(
         effective_user=user,
@@ -44,6 +46,71 @@ def _build_update(user_id=1, chat_id=100, language_code="ru"):
 
 
 class DownloadsHandlersTests(unittest.IsolatedAsyncioTestCase):
+    async def _run_download_with_metadata_offer_failure(self, logs_enabled):
+        update = _build_update()
+        context = _DummyContext()
+        status_message = SimpleNamespace(delete=AsyncMock())
+        update.message.reply_text = AsyncMock(return_value=status_message)
+
+        class DummyYoutubeDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def extract_info(self, url, download=False):
+                return {"duration": 1}
+
+        def fake_worker(url, tmpdir, *args):
+            file_path = os.path.join(tmpdir, "track.mp3")
+            with open(file_path, "wb") as fh:
+                fh.write(b"fake mp3")
+            return {
+                "status": "ok",
+                "mode": "file",
+                "file_path": file_path,
+                "ext": "mp3",
+                "title": "Title",
+                "uploader": "Artist",
+            }
+
+        async def noop(*args, **kwargs):
+            return None
+
+        with (
+            mock.patch.object(downloads, "get_lang", new=AsyncMock(return_value="ru")),
+            mock.patch.object(downloads, "get_user_logs_enabled", new=AsyncMock(return_value=logs_enabled)),
+            mock.patch.object(downloads, "get_user_settings", new=AsyncMock(return_value={"metadata_prompt_enabled": True, "logs": logs_enabled})),
+            mock.patch.object(downloads, "resolve_ffmpeg_path", return_value="ffmpeg"),
+            mock.patch.object(downloads, "YoutubeDL", DummyYoutubeDL),
+            mock.patch.object(downloads, "_sync_worker", side_effect=fake_worker),
+            mock.patch.object(downloads, "_progress_watcher", side_effect=noop),
+            mock.patch.object(downloads, "_progress_consumer", side_effect=noop),
+            mock.patch.object(downloads, "_stall_watchdog", side_effect=noop),
+            mock.patch.object(downloads, "register_active_download_task"),
+            mock.patch.object(downloads, "unregister_active_download_task"),
+            mock.patch.object(downloads, "register_active_worker_future"),
+            mock.patch.object(downloads, "unregister_active_worker_future"),
+            mock.patch.object(downloads, "maybe_offer_metadata_edit", new=AsyncMock(side_effect=RuntimeError("metadata boom"))),
+            mock.patch.object(downloads, "log_event") as log_mock,
+        ):
+            result = await downloads.download_content(
+                update,
+                context,
+                "https://example.com/track",
+                platform="soundcloud",
+                message=update.message,
+            )
+
+        self.assertFalse(result["metadata_prompt_offered"])
+        update.message.reply_audio.assert_awaited_once()
+        status_message.delete.assert_awaited()
+        return log_mock
+
     async def test_cancel_command_closes_metadata_and_uses_metadata_message(self):
         update = _build_update()
         context = _DummyContext()
@@ -149,6 +216,24 @@ class DownloadsHandlersTests(unittest.IsolatedAsyncioTestCase):
             await task
 
         target_message.reply_text.assert_awaited_once_with(t("send_another", "ru"))
+
+    async def test_download_logs_do_not_include_user_id_when_user_logs_disabled(self):
+        log_mock = await self._run_download_with_metadata_offer_failure(logs_enabled=False)
+
+        for call in log_mock.call_args_list:
+            self.assertNotIn("user_id", call.kwargs)
+
+        metadata_calls = [call for call in log_mock.call_args_list if call.args and call.args[0] == "metadata.offer.failed"]
+        self.assertEqual(len(metadata_calls), 1)
+        self.assertNotIn("error", metadata_calls[0].kwargs)
+
+    async def test_download_logs_include_user_id_when_user_logs_enabled(self):
+        log_mock = await self._run_download_with_metadata_offer_failure(logs_enabled=True)
+
+        metadata_calls = [call for call in log_mock.call_args_list if call.args and call.args[0] == "metadata.offer.failed"]
+        self.assertEqual(len(metadata_calls), 1)
+        self.assertEqual(metadata_calls[0].kwargs.get("user_id"), 1)
+        self.assertEqual(metadata_calls[0].kwargs.get("error"), "metadata boom")
 
 
 if __name__ == "__main__":

@@ -164,6 +164,21 @@ class AccessAndUsageTests(unittest.TestCase):
         self.assertIsNone(value)
         self.assertEqual(key, "metadata_invalid_control_chars")
 
+    def test_metadata_user_logs_respect_privacy_setting(self):
+        with (
+            mock.patch.object(metadata_store, "get_user_logs_enabled_sync", return_value=False),
+            mock.patch.object(metadata_store, "log_event") as log_mock,
+        ):
+            metadata_store._log_metadata_user_event(777, "metadata.edit.started", session_id="s1")
+        log_mock.assert_not_called()
+
+        with (
+            mock.patch.object(metadata_store, "get_user_logs_enabled_sync", return_value=True),
+            mock.patch.object(metadata_store, "log_event") as log_mock,
+        ):
+            metadata_store._log_metadata_user_event(777, "metadata.edit.started", session_id="s1")
+        log_mock.assert_called_once_with("metadata.edit.started", level="INFO", user_id=777, session_id="s1")
+
     def test_utc_display_formatter(self):
         self.assertEqual(
             access.format_utc_iso_for_display("2026-03-27T17:20:44Z"),

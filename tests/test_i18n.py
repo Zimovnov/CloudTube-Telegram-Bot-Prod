@@ -20,8 +20,14 @@ class I18nTests(unittest.TestCase):
         self.assertNotIn("подпис", t("start_hint", "ru").lower())
         self.assertNotIn("/legal", t("start_hint", "en").lower())
         self.assertNotIn("/legal", t("start_hint", "ru").lower())
-        self.assertIn("unlimited", t("rules_text", "en").lower())
-        self.assertIn("без ограничений", t("rules_text", "ru").lower())
+
+    def test_faq_does_not_expose_metadata_session_ttl(self):
+        self.assertIn("1)", t("faq_text", "ru"))
+        self.assertIn("3)", t("faq_text", "en"))
+        self.assertNotIn("4)", t("faq_text", "ru"))
+        self.assertNotIn("4)", t("faq_text", "en"))
+        self.assertNotIn("сессия редактирования", t("faq_text", "ru").lower())
+        self.assertNotIn("metadata edit session ttl", t("faq_text", "en").lower())
 
 
 if __name__ == "__main__":

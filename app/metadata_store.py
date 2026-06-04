@@ -19,6 +19,7 @@ from app.config import (
 from app.errors import ERR_METADATA_INVALID_INPUT, ERR_METADATA_SESSION_EXPIRED
 from app.jobs import RedisError, _get_redis_client, _log_redis_issue, _redis_key, resolve_ffmpeg_path
 from app.logging_utils import log_event
+from app.settings_store import get_user_logs_enabled_sync
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1F\x7F]")
 
@@ -87,6 +88,12 @@ def _touch_session_payload(session):
     return session
 
 
+def _log_metadata_user_event(user_id, event, level="INFO", **fields):
+    if not get_user_logs_enabled_sync(user_id, default=False):
+        return
+    log_event(event, level=level, user_id=user_id, **fields)
+
+
 def validate_metadata_value(field, value):
     if field not in ("title", "artist"):
         return False, None, "metadata_invalid_field"
@@ -148,10 +155,10 @@ def create_session_sync(user_id, src_file_path, title, artist, source_job_id=Non
             state.LOCAL_METADATA_SESSIONS[session["session_id"]] = dict(session)
             state.LOCAL_METADATA_USER_ACTIVE[uid] = session["session_id"]
 
-    log_event(
+    _log_metadata_user_event(
+        uid,
         "metadata.edit.started",
         level="INFO",
-        user_id=uid,
         session_id=session["session_id"],
         source_job_id=source_job_id,
     )
@@ -228,7 +235,7 @@ def _close_session_locked(client, sid, session, reason):
             pass
         except Exception:
             pass
-    log_event("metadata.edit.closed", level="INFO", user_id=uid, session_id=sid, reason=reason)
+    _log_metadata_user_event(uid, "metadata.edit.closed", level="INFO", session_id=sid, reason=reason)
     return True
 
 
@@ -413,7 +420,7 @@ def apply_changes_sync(session_id):
         if not session:
             return {"ok": False, "error_code": ERR_METADATA_SESSION_EXPIRED}
         _save_session_locked(client, session)
-    log_event("metadata.edit.applied", level="INFO", user_id=session["user_id"], session_id=sid)
+    _log_metadata_user_event(session["user_id"], "metadata.edit.applied", level="INFO", session_id=sid)
     return {
         "ok": True,
         "session": dict(session),
@@ -511,10 +518,10 @@ def expire_due_sessions_sync():
             if uid:
                 expired.append({"user_id": uid, "session_id": sid})
     for item in expired:
-        log_event(
+        _log_metadata_user_event(
+            item["user_id"],
             "metadata.edit.expired",
             level="INFO",
-            user_id=item["user_id"],
             session_id=item["session_id"],
         )
     return expired

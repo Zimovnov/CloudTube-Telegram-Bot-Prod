@@ -2,7 +2,6 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from app.config import MAX_MEDIA_DURATION_SECONDS
 from app.i18n import get_lang, pack_mark, t, tf
 from app.jobs import allow_settings_change
 from app.logging_utils import log_event
@@ -36,7 +35,6 @@ def build_main_settings_markup(s, lang):
             )
         ],
         [InlineKeyboardButton(t("trimming", lang), callback_data="settings:trimming")],
-        [InlineKeyboardButton(t("limits", lang), callback_data="settings:limits")],
         [
             InlineKeyboardButton(
                 f"{t('privacy_logs', lang)} {pack_mark(s.get('logs', False))}",
@@ -247,12 +245,6 @@ async def _toggle_metadata_prompt(query, s, user_id, lang):
     await _safe_edit(query, tf("metadata_prompt_saved", lang, value=val))
 
 
-async def _show_limits(query, user_id, lang):
-    text = tf("rules_text", lang, max_hours=int(MAX_MEDIA_DURATION_SECONDS / 3600))
-    kb = [[InlineKeyboardButton(t("back", lang), callback_data="settings:back")]]
-    await _safe_edit(query, text, reply_markup=InlineKeyboardMarkup(kb))
-
-
 async def _show_language(query, s, lang):
     kb = [
         [
@@ -323,7 +315,6 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "format": lambda: _show_format_root(query, s, lang),
             "trimming": lambda: _show_trimming_root(query, lang),
             "logs": lambda: _toggle_logs(query, s, user_id, lang),
-            "limits": lambda: _show_limits(query, user_id, lang),
             "language": lambda: _show_language(query, s, lang),
             "support": lambda: _show_support(query, lang),
             "reset": lambda: _show_reset(query, lang),

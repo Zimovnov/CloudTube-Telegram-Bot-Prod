@@ -156,7 +156,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
-def _track_background_job_task(task, user_id=None, platform=None, yt_type=None):
+def _log_download_technical_event(event, *, user_logs_enabled=False, user_id=None, include_error_text=False, **fields):
+    payload = dict(fields)
+    if user_logs_enabled and user_id is not None:
+        payload["user_id"] = user_id
+    if not include_error_text:
+        payload.pop("error", None)
+    log_event(event, **payload)
+
+
+def _track_background_job_task(task, user_id=None, platform=None, yt_type=None, user_logs_enabled=False):
     with _BACKGROUND_JOB_TASKS_LOCK:
         BACKGROUND_JOB_TASKS.add(task)
 
@@ -168,10 +177,12 @@ def _track_background_job_task(task, user_id=None, platform=None, yt_type=None):
         except asyncio.CancelledError:
             return
         except Exception as e:
-            log_event(
+            _log_download_technical_event(
                 "job.background_runner.done_error",
                 level="WARNING",
                 user_id=user_id,
+                user_logs_enabled=user_logs_enabled,
+                include_error_text=bool(user_logs_enabled),
                 platform=platform,
                 yt_type=yt_type,
                 error_class=type(e).__name__,
@@ -179,11 +190,13 @@ def _track_background_job_task(task, user_id=None, platform=None, yt_type=None):
             )
             return
         if exc:
-            log_event(
+            _log_download_technical_event(
                 "job.background_runner.unhandled_exception",
                 level="ERROR",
                 error_code=classify_exception_error_code(exc),
                 user_id=user_id,
+                user_logs_enabled=user_logs_enabled,
+                include_error_text=bool(user_logs_enabled),
                 platform=platform,
                 yt_type=yt_type,
                 error_class=type(exc).__name__,
@@ -209,15 +222,17 @@ def schedule_download_background(
     prompt_message_id=None,
     plan_snapshot=None,
     max_duration_seconds=MAX_DURATION,
+    user_logs_enabled=False,
 ):
     target_message = message or getattr(update, "effective_message", None)
     if target_message is None:
         finish_job(context, user_id)
-        log_event(
+        _log_download_technical_event(
             "job.background_runner.target_message_missing",
             level="ERROR",
             error_code=ERR_WORKER_RUNTIME,
             user_id=user_id,
+            user_logs_enabled=user_logs_enabled,
             platform=platform,
             yt_type=yt_type,
         )
@@ -265,11 +280,13 @@ def schedule_download_background(
         task = asyncio.create_task(_runner())
     except Exception as e:
         finish_job(context, user_id)
-        log_event(
+        _log_download_technical_event(
             "job.background_runner.create_task_failed",
             level="ERROR",
             error_code=ERR_WORKER_RUNTIME,
             user_id=user_id,
+            user_logs_enabled=user_logs_enabled,
+            include_error_text=bool(user_logs_enabled),
             platform=platform,
             yt_type=yt_type,
             error_class=type(e).__name__,
@@ -277,7 +294,7 @@ def schedule_download_background(
         )
         return None
     register_scheduled_download_task(user_id, task)
-    _track_background_job_task(task, user_id=user_id, platform=platform, yt_type=yt_type)
+    _track_background_job_task(task, user_id=user_id, platform=platform, yt_type=yt_type, user_logs_enabled=user_logs_enabled)
     return task
 
 
@@ -348,6 +365,7 @@ async def _start_download_flow(
         prompt_message_id=prompt_message_id,
         plan_snapshot=plan_snapshot,
         max_duration_seconds=max_duration_seconds,
+        user_logs_enabled=user_logs_enabled,
     )
     if task is None:
         try:
@@ -1255,10 +1273,12 @@ async def download_content(
                     )
                     result_flags["metadata_prompt_offered"] = bool(session)
                 except Exception as e:
-                    log_event(
+                    _log_download_technical_event(
                         "metadata.offer.failed",
                         level="ERROR",
                         user_id=user_id,
+                        user_logs_enabled=user_logs_enabled,
+                        include_error_text=bool(user_logs_enabled),
                         job_id=job_id,
                         error_class=type(e).__name__,
                         error=str(e),
