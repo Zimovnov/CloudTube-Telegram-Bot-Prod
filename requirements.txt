@@ -1,4 +1,4 @@
-﻿aiofiles==25.1.0
+aiofiles==25.1.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
 aiosignal==1.4.0
@@ -8,7 +8,7 @@ APScheduler==3.11.0
 async-timeout==4.0.3
 attrs==25.4.0
 Babel==2.9.1
-certifi==2025.8.3
+certifi==2026.10.18
 charset-normalizer==3.4.3
 colorama==0.4.6
 decorator==4.4.2
